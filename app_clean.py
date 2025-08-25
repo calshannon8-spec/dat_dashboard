@@ -670,64 +670,115 @@ elif analysis_key == "treasury":
 
 
 elif analysis_key == "market_vs_treasury":
-    st.subheader("Treasury % of Market Cap vs Market Cap")
-    st.caption("Relationship between market cap and the share of crypto treasury")
-    # Create a two‑column layout: chart and selector
-    graph_col, select_col = st.columns([4, 1])
+    st.subheader("Market Cap vs Treasury (Grouped Bars)")
+    st.caption("Two bars per company — compare total Market Cap vs Crypto Treasury. Sorted by Treasury as % of Market Cap.")
+
+    # Two-column layout: chart and selector (re-use your checkbox list)
+    graph_col, select_col = st.columns([6, 1])
     with select_col:
         selected_tickers = render_company_selector(df_view)
+   
 
+
+    # Filter rows by selection (if any)
     df_view_local = df_view[df_view["Ticker"].isin(selected_tickers)] if selected_tickers else df_view
-    _sc = df_view_local[["Ticker", "name", "Treasury USD", "Mkt Cap (USD)", "% of Mkt Cap"]].dropna()
-    if _sc.empty:
-        graph_col.info("Not enough data for scatter.")
+
+    # Keep only the needed columns and make safe numerics
+    d = df_view_local[["Ticker", "name", "Treasury USD", "Mkt Cap (USD)"]].copy()
+    d["Treasury USD"] = pd.to_numeric(d["Treasury USD"], errors="coerce")
+    d["Mkt Cap (USD)"] = pd.to_numeric(d["Mkt Cap (USD)"], errors="coerce")
+
+    # Drop rows with missing/zero market cap to avoid div-by-zero & bad sorting
+    d = d.replace([np.inf, -np.inf], np.nan).dropna(subset=["Mkt Cap (USD)"])
+    d = d[d["Mkt Cap (USD)"] > 0]
+
+    if d.empty:
+        graph_col.info("No data available for grouped bars.")
         render_live_prices(prices, pct_change)
         st.stop()
 
-    _sc = _sc.assign(pct=_sc["% of Mkt Cap"] / 100.0)
+    # Sort by dependency: Treasury as % of Market Cap
+    d["T%MCap"] = (d["Treasury USD"] / d["Mkt Cap (USD)"]) * 100
+    d = d.sort_values("T%MCap", ascending=False)
+
+    long = d.melt(
+        id_vars=["Ticker", "T%MCap", "Mkt Cap (USD)", "Treasury USD"],  # include market cap and treasury for hover/tooltip
+        value_vars=["Mkt Cap (USD)", "Treasury USD"],
+        var_name="Metric",
+        value_name="USD",
+    )
+
 
     if HAS_PLOTLY:
-        max_val_sc = _sc["Mkt Cap (USD)"].max() if not _sc["Mkt Cap (USD)"].empty else 0
-        if max_val_sc and max_val_sc > 0:
-            tickvals_sc = np.linspace(0, max_val_sc, 5)
-            ticktext_sc = [f"{v/1e9:.2f}B" for v in tickvals_sc]
+        # Nice y-axis ticks in billions
+        max_y = float(long["USD"].max() or 0.0)
+        if max_y > 0:
+            tickvals = np.linspace(0, max_y, 5)
+            ticktext = [f"{v/1e9:.2f}B" for v in tickvals]
         else:
-            tickvals_sc = [0]
-            ticktext_sc = ["0B"]
+            tickvals, ticktext = [0], ["0B"]
 
-        fig_sc = px.scatter(
-            _sc,
-            x="Mkt Cap (USD)",
-            y="pct",
-            size="Treasury USD",
-            hover_data=["Ticker", "name"],
+        fig = px.bar(
+            long,
+            x="Ticker",
+            y="USD",
+            color="Metric",
+            barmode="group",
             title=None,
-            labels={"pct": "% of Market Cap"},
+            labels={
+                "USD": "Value (USD)",
+                "Mkt Cap (USD)": "Market Cap",
+                "Treasury USD": "Treasury",
+                "T%MCap": "Treasury % of Market Cap",
+            },
+            hover_data={
+                "T%MCap": ":.2f",
+                "Mkt Cap (USD)": ":,.0f",
+                "Treasury USD": ":,.0f",
+                "USD": False,
+            },
         )
-        fig_sc.update_xaxes(
-            title="Market Cap (B USD)",
-            type="linear",
+        fig.update_yaxes(
+            title="Amount (B USD)",
             tickmode="array",
-            tickvals=tickvals_sc,
-            ticktext=ticktext_sc,
+            tickvals=tickvals,
+            ticktext=ticktext,
         )
-        fig_sc.update_yaxes(title="% of Market Cap", tickformat=".2%")
-        fig_sc.update_layout(legend=dict(orientation="v", y=1, x=1.02))
-        graph_col.plotly_chart(fig_sc, use_container_width=True)
-    else:
-        chart_sc = (
-            alt.Chart(_sc)
-            .mark_circle()
-            .encode(
-                x=alt.X("Mkt Cap (USD):Q", title="Market Cap (USD)", scale=alt.Scale(type="linear")),
-                y=alt.Y("pct:Q", title="% of Market Cap"),
-                size="Treasury USD:Q",
-                tooltip=["Ticker", "name", "Treasury USD", "Mkt Cap (USD)", "% of Mkt Cap"],
-            )
-            .properties(title=None)
-        )
-        graph_col.altair_chart(chart_sc, use_container_width=True)
+        fig.update_layout(legend_title="", margin=dict(t=60, l=0, r=0, b=0))
 
+        # clean legend + margins + bigger canvas
+        fig.update_layout(
+            legend_title="",
+            margin=dict(t=50, l=0, r=0, b=0),
+            height=620
+        )
+
+        # Display the plot
+        graph_col.plotly_chart(fig, use_container_width=True)
+
+    else:
+        # Altair fallback
+        import altair as alt
+        chart = (
+            alt.Chart(long)
+            .mark_bar()
+            .encode(
+                x=alt.X("Ticker:N", sort=list(d["Ticker"])),
+                y=alt.Y("USD:Q", title="Amount (USD)", scale=alt.Scale(type="linear")),
+                color=alt.Color("Metric:N", title=""),
+                tooltip=[
+                    alt.Tooltip("Ticker:N"),
+                    alt.Tooltip("Metric:N"),
+                    alt.Tooltip("USD:Q", title="Value (USD)", format=",.0f"),
+                    alt.Tooltip("Mkt Cap (USD):Q", title="Market Cap", format=",.0f"),
+                    alt.Tooltip("Treasury USD:Q", title="Treasury", format=",.0f"),
+                    alt.Tooltip("T%MCap:Q", title="Treasury % of MktCap", format=".2f")
+                ]
+            )
+        )
+        graph_col.altair_chart(chart, use_container_width=True)
+
+    # Keep live prices under the chart
     render_live_prices(prices, pct_change)
     st.stop()
 
@@ -839,61 +890,6 @@ elif analysis_key == "table":
     st.stop()
 
 
-
-
-
-    # ------------------------------------------------------------------
-    # Sub‑tab 2: Market Cap vs Treasury scatter
-    # ------------------------------------------------------------------
-    with sub_tab2:
-        st.markdown("#### Treasury % of Market Cap vs Market Cap")
-        st.caption("Relationship between market cap and the share of crypto treasury")
-        _sc = df_view[["Ticker", "name", "Treasury USD", "Mkt Cap (USD)", "% of Mkt Cap"]].dropna()
-        if not _sc.empty:
-            _sc = _sc.assign(pct=_sc["% of Mkt Cap"] / 100.0)
-            if HAS_PLOTLY:
-                max_val_sc = _sc["Mkt Cap (USD)"].max() if not _sc["Mkt Cap (USD)"].empty else 0
-                if max_val_sc and max_val_sc > 0:
-                    tickvals_sc = np.linspace(0, max_val_sc, 5)
-                    ticktext_sc = [f"{v/1e9:.2f}B" for v in tickvals_sc]
-                else:
-                    tickvals_sc = [0]
-                    ticktext_sc = ["0B"]
-                fig_sc = px.scatter(
-                    _sc,
-                    x="Mkt Cap (USD)",
-                    y="pct",
-                    size="Treasury USD",
-                    hover_data=["Ticker", "name"],
-                    title=None,
-                    labels={"pct": "% of Market Cap"},
-                )
-                fig_sc.update_xaxes(
-                    title="Market Cap (B USD)",
-                    type="linear",
-                    tickmode="array",
-                    tickvals=tickvals_sc,
-                    ticktext=ticktext_sc,
-                )
-                fig_sc.update_yaxes(title="% of Market Cap", tickformat=".2%")
-                # Provide a vertical legend if necessary
-                fig_sc.update_layout(legend=dict(orientation="v", y=1, x=1.02))
-                st.plotly_chart(fig_sc, use_container_width=True)
-            else:
-                chart_sc = (
-                    alt.Chart(_sc)
-                    .mark_circle()
-                    .encode(
-                        x=alt.X("Mkt Cap (USD):Q", title="Market Cap (USD)", scale=alt.Scale(type="linear")),
-                        y=alt.Y("pct:Q", title="% of Market Cap"),
-                        size="Treasury USD:Q",
-                        tooltip=["Ticker", "name", "Treasury USD", "Mkt Cap (USD)", "% of Mkt Cap"],
-                    )
-                    .properties(title=None)
-                )
-                st.altair_chart(chart_sc, use_container_width=True)
-        else:
-            st.info("Not enough data for scatter.")
 
     # ------------------------------------------------------------------
     # Sub‑tab 3: Liabilities vs Net Crypto NAV
