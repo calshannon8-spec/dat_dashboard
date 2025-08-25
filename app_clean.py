@@ -518,10 +518,16 @@ def with_live_fields(c: dict) -> dict:
     return c2
 
 def compute_row(c: dict, prices: dict) -> dict:
-    """Build one numeric row (floats) for the table & charts."""
-    btc_usd = (c.get("holdings_btc", 0.0) or 0.0) * prices.get("BTC", 0.0)
-    eth_usd = (c.get("holdings_eth", 0.0) or 0.0) * prices.get("ETH", 0.0)
-    stables_usd = c.get("holdings_stables", 0.0) or 0.0
+    # Coerce everything to floats and default to 0.0 if missing/None
+    btc_px = float(prices.get("BTC") or 0.0)
+    eth_px = float(prices.get("ETH") or 0.0)
+
+    btc_qty = float(c.get("holdings_btc", 0.0) or 0.0)
+    eth_qty = float(c.get("holdings_eth", 0.0) or 0.0)
+    stables_usd = float(c.get("holdings_stables", 0.0) or 0.0)
+
+    btc_usd = btc_qty * btc_px
+    eth_usd = eth_qty * eth_px
     treasury_usd = btc_usd + eth_usd + stables_usd
 
     liab = float(c.get("Liabilities", c.get("liabilities", 0.0)) or 0.0)
@@ -552,6 +558,7 @@ def compute_row(c: dict, prices: dict) -> dict:
         "MNAV (x)": mnav,
     }
 
+
 # Build enriched companies & numeric DataFrame once
 # Fetch live crypto prices and 24h changes for BTC and ETH. These values will be used
 # when computing USD treasury values in compute_row.
@@ -569,8 +576,9 @@ df = df.sort_values(by="% of Mkt Cap", ascending=False).reset_index(drop=True)
 
 # -------------------- Filters / KPIs / Charts -------------------
 
-# Filter panel removed: always use full DataFrame without sidebar filters
+# Use the full dataframe with no sidebar filters
 df_view = df.copy()
+
 
 # ------------------------------------------------------------------
 # Conditional rendering based on the selected analysis.
