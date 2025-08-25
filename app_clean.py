@@ -2,7 +2,8 @@
 # Order: imports -> helpers -> load CSV -> prices -> with_live_fields -> compute_row -> DF -> UI
 # ================================================================
 
-import os, re
+import os
+import re
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -21,7 +22,8 @@ except Exception:
     import altair as alt  # Streamlit ships with Altair
 
 APP_DIR = Path(__file__).parent.resolve()
-st.set_page_config(page_title="Digital Asset Treasury Dashboard", page_icon="🟠")
+st.set_page_config(
+    page_title="Digital Asset Treasury Dashboard", page_icon="🟠")
 
 # ------------------------------------------------------------------
 # Intro / Glossary
@@ -65,6 +67,8 @@ analysis_key = analysis_options[selected_analysis_label]
 # ------------------------------------------------------------------
 # Live price fetching and display
 # Returns current BTC and ETH prices and their 24‑hour percentage change.
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_prices() -> tuple[dict, dict]:
     """
@@ -100,6 +104,7 @@ def fetch_prices() -> tuple[dict, dict]:
     except Exception:
         return ({"BTC": None, "ETH": None}, {"BTC": None, "ETH": None})
 
+
 def render_live_prices(prices: dict, pct_change: dict) -> None:
     """
     Render a two‑column display of BTC and ETH prices with their 24‑hour percentage change.
@@ -123,6 +128,8 @@ def render_live_prices(prices: dict, pct_change: dict) -> None:
 
 # ------------------------------------------------------------------
 # Company selector for charts
+
+
 def render_company_selector(df_in: pd.DataFrame) -> list[str]:
     """
     Render a list of checkboxes for each ticker in the provided DataFrame.
@@ -139,34 +146,41 @@ def render_company_selector(df_in: pd.DataFrame) -> list[str]:
 # Note: conditional rendering based on analysis_key is implemented later in the script.
 
 
-
 # --------------------------- Helpers ----------------------------
 
 def add_mnav(df: pd.DataFrame) -> pd.DataFrame:
     """Adds Net Crypto NAV, NAV/share, MNAV(x) using columns already in DataFrame."""
-    treas_col  = "Treasury USD"
-    liab_col   = "Total Liabilities"
+    treas_col = "Treasury USD"
+    liab_col = "Total Liabilities"
     shares_col = "Shares Outstanding"
-    price_col  = "Share price USD"
+    price_col = "Share price USD"
 
     # Fallbacks if your DataFrame used different headers
-    if treas_col not in df.columns and "treasury_usd" in df.columns: treas_col = "treasury_usd"
-    if liab_col  not in df.columns and "liabilities"  in df.columns: liab_col  = "liabilities"
-    if shares_col not in df.columns and "shares_out"  in df.columns: shares_col = "shares_out"
-    if price_col  not in df.columns and "share_price" in df.columns: price_col  = "share_price"
+    if treas_col not in df.columns and "treasury_usd" in df.columns:
+        treas_col = "treasury_usd"
+    if liab_col not in df.columns and "liabilities" in df.columns:
+        liab_col = "liabilities"
+    if shares_col not in df.columns and "shares_out" in df.columns:
+        shares_col = "shares_out"
+    if price_col not in df.columns and "share_price" in df.columns:
+        price_col = "share_price"
 
     for c in [treas_col, liab_col, shares_col, price_col]:
-        if c not in df.columns: df[c] = 0
+        if c not in df.columns:
+            df[c] = 0
 
-    df[treas_col]  = pd.to_numeric(df[treas_col],  errors="coerce").fillna(0.0)
-    df[liab_col]   = pd.to_numeric(df[liab_col],   errors="coerce").fillna(0.0)
+    df[treas_col] = pd.to_numeric(df[treas_col],  errors="coerce").fillna(0.0)
+    df[liab_col] = pd.to_numeric(df[liab_col],   errors="coerce").fillna(0.0)
     df[shares_col] = pd.to_numeric(df[shares_col], errors="coerce").fillna(0.0)
-    df[price_col]  = pd.to_numeric(df[price_col],  errors="coerce").fillna(0.0)
+    df[price_col] = pd.to_numeric(df[price_col],  errors="coerce").fillna(0.0)
 
     df["Net Crypto NAV"] = df[treas_col] - df[liab_col]
-    df["NAV per share"]  = np.where(df[shares_col] > 0, df["Net Crypto NAV"] / df[shares_col], np.nan)
-    df["MNAV (x)"]       = np.where(df["NAV per share"] > 0, df[price_col] / df["NAV per share"], np.nan)
+    df["NAV per share"] = np.where(
+        df[shares_col] > 0, df["Net Crypto NAV"] / df[shares_col], np.nan)
+    df["MNAV (x)"] = np.where(df["NAV per share"] > 0,
+                              df[price_col] / df["NAV per share"], np.nan)
     return df
+
 
 @st.cache_data(ttl=120, show_spinner=False)
 def fetch_mcap_yahoo(y_symbol: str) -> float | None:
@@ -186,6 +200,7 @@ def fetch_mcap_yahoo(y_symbol: str) -> float | None:
         return cap if cap and cap > 0 else None
     except Exception:
         return None
+
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_equity_snapshot(y_symbol: str) -> dict:
@@ -208,10 +223,12 @@ def fetch_equity_snapshot(y_symbol: str) -> dict:
         except Exception:
             info = {}
         if price is None:
-            price = info.get("regularMarketPrice") or info.get("currentPrice") or info.get("previousClose")
+            price = info.get("regularMarketPrice") or info.get(
+                "currentPrice") or info.get("previousClose")
         if mcap is None:
             mcap = info.get("marketCap")
-        shares = (info.get("sharesOutstanding") or info.get("impliedSharesOutstanding") or info.get("floatShares"))
+        shares = (info.get("sharesOutstanding") or info.get(
+            "impliedSharesOutstanding") or info.get("floatShares"))
 
         if price is None:
             try:
@@ -235,12 +252,14 @@ def fetch_equity_snapshot(y_symbol: str) -> dict:
     except Exception:
         return {"price": None, "shares": None, "market_cap": None}
 
+
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_fx(symbol: str) -> float | None:
     try:
         t = yf.Ticker(symbol)
         info = getattr(t, "fast_info", {}) or {}
-        px = (info.get("last_price") or info.get("lastPrice") or info.get("regular_market_price"))
+        px = (info.get("last_price") or info.get("lastPrice")
+              or info.get("regular_market_price"))
         if not px:
             hist = t.history(period="1d")
             if not hist.empty:
@@ -248,6 +267,7 @@ def fetch_fx(symbol: str) -> float | None:
         return float(px) if px else None
     except Exception:
         return None
+
 
 @st.cache_data(ttl=600, show_spinner=False)
 def fx_map_usd() -> dict:
@@ -260,6 +280,7 @@ def fx_map_usd() -> dict:
         "GBX": (fetch_fx("GBPUSD=X") or 1.27) / 100.0,  # pence -> USD
         "GBP": fetch_fx("GBPUSD=X") or 1.27,
     }
+
 
 def fmt_abbrev(v):
     """
@@ -310,6 +331,7 @@ def _format_number_no_currency(n: float) -> str:
     else:
         return f"{sign}{value_abs:,.0f}"
 
+
 EXCHANGE_TO_CCY = {
     "NASDAQ": "USD", "NYSE": "USD",
     "TSXV": "CAD",
@@ -323,6 +345,7 @@ YAHOO_SUFFIX_BY_EXCHANGE = {
     "LON": ".L", "AQUIS": ".AQ", "ETR": ".DE", "TYO": ".T",
 }
 
+
 def yahoo_symbol_for(ticker: str, exchange: str | None) -> str:
     t = (ticker or "").strip().upper()
     ex = (exchange or "").strip().upper()
@@ -331,11 +354,12 @@ def yahoo_symbol_for(ticker: str, exchange: str | None) -> str:
     suffix = YAHOO_SUFFIX_BY_EXCHANGE.get(ex, "")
     return f"{t}{suffix}"
 
+
 # Manual overrides
 YAHOO_MAP = {
-    "BTCT.V":"BTCT.V","MATA.V":"MATA.V","SWC.AQ":"SWC.AQ","3350.T":"3350.T",
-    "CEP":"CEP","SQNS":"SQNS","HOLO":"HOLO","SATS.L":"SATS.L","DJT":"DJT",
-    "MSTR":"MSTR","NA":"NA","ADE.DE":"ADE.DE","BMNR":"BMNR","FGNX":"FGNX","SBET":"SBET",
+    "BTCT.V": "BTCT.V", "MATA.V": "MATA.V", "SWC.AQ": "SWC.AQ", "3350.T": "3350.T",
+    "CEP": "CEP", "SQNS": "SQNS", "HOLO": "HOLO", "SATS.L": "SATS.L", "DJT": "DJT",
+    "MSTR": "MSTR", "NA": "NA", "ADE.DE": "ADE.DE", "BMNR": "BMNR", "FGNX": "FGNX", "SBET": "SBET",
     "SWC": "SWC.AQ",  # SWC ticker → AQUIS suffix
 }
 
@@ -348,6 +372,7 @@ NAME_TO_MCAP_CCY = {
 }
 
 # ----------------- CSV parsing function -----------------
+
 
 def load_companies_and_holdings(src):
     """Parse CSV or uploaded file-like into (companies list, holdings dict)."""
@@ -363,20 +388,22 @@ def load_companies_and_holdings(src):
     # numbers
     for col in ["btc", "eth"]:
         df[col] = (df[col].astype(str).str.replace(",", "", regex=False)
-                              .str.replace("$", "", regex=False)
+                   .str.replace("$", "", regex=False)
                    .pipe(pd.to_numeric, errors="coerce").fillna(0.0))
 
     # liabilities
     if "liabilities" not in df.columns:
         df["liabilities"] = 0
     df["liabilities"] = (df["liabilities"].astype(str).str.replace(",", "", regex=False)
-                                            .str.replace("$", "", regex=False)
+                         .str.replace("$", "", regex=False)
                          .pipe(pd.to_numeric, errors="coerce").fillna(0.0))
 
     # shares_out / sharesout normalization
-    col = ("shares_out" if "shares_out" in df.columns else ("sharesout" if "sharesout" in df.columns else None))
+    col = ("shares_out" if "shares_out" in df.columns else (
+        "sharesout" if "sharesout" in df.columns else None))
     if col is not None:
-        ser = (df[col].astype(str).str.replace(",", "", regex=False).str.replace("$", "", regex=False))
+        ser = (df[col].astype(str).str.replace(
+            ",", "", regex=False).str.replace("$", "", regex=False))
         df["shares_out"] = pd.to_numeric(ser, errors="coerce").fillna(0.0)
     else:
         df["shares_out"] = 0.0
@@ -407,7 +434,9 @@ def load_companies_and_holdings(src):
 
 # -------------------- CSV loader (one place) --------------------
 
-uploaded = st.sidebar.file_uploader("Upload companies_holdings.csv", type=["csv"])
+
+uploaded = st.sidebar.file_uploader(
+    "Upload companies_holdings.csv", type=["csv"])
 if uploaded is not None:
     companies, HOLDINGS = load_companies_and_holdings(uploaded)
     # Record CSV name and load time when user uploads a file
@@ -442,9 +471,7 @@ LIABILITIES = {
 }
 
 
-
 # -------------------- Company Screener --------------------------
-
 
 
 def with_live_fields(c: dict) -> dict:
@@ -497,16 +524,18 @@ def with_live_fields(c: dict) -> dict:
 
     # --- Holdings from CSV dict ---
     h = HOLDINGS.get(c.get("ticker"), {})
-    c2["holdings_btc"]     = float(h.get("btc", 0) or 0)
-    c2["holdings_eth"]     = float(h.get("eth", 0) or 0)
+    c2["holdings_btc"] = float(h.get("btc", 0) or 0)
+    c2["holdings_eth"] = float(h.get("eth", 0) or 0)
     c2["holdings_stables"] = float(h.get("stables_usd", 0) or 0)
 
     # --- Liabilities + NAV/share ---
-    c2["Liabilities"] = float(h.get("liabilities", c.get("liabilities", 0)) or 0)
+    c2["Liabilities"] = float(
+        h.get("liabilities", c.get("liabilities", 0)) or 0)
     # treasury_usd will be computed in compute_row with live prices
-    shares_out = float(c2.get("Shares Outstanding", c2.get("shares_out", 0)) or 0)
+    shares_out = float(c2.get("Shares Outstanding",
+                       c2.get("shares_out", 0)) or 0)
     net_nav = 0.0  # temporary until compute_row
-    c2["Net NAV (USD)"]    = net_nav
+    c2["Net NAV (USD)"] = net_nav
     c2["NAV/ Share (USD)"] = (net_nav / shares_out) if shares_out > 0 else 0.0
 
     # Canonicalize mcap from price × shares when possible
@@ -516,6 +545,7 @@ def with_live_fields(c: dict) -> dict:
         c2["market_cap_usd"] = px_usd * so_val
 
     return c2
+
 
 def compute_row(c: dict, prices: dict) -> dict:
     # Coerce everything to floats and default to 0.0 if missing/None
@@ -531,12 +561,15 @@ def compute_row(c: dict, prices: dict) -> dict:
     treasury_usd = btc_usd + eth_usd + stables_usd
 
     liab = float(c.get("Liabilities", c.get("liabilities", 0.0)) or 0.0)
-    shares_out = float(c.get("Shares Outstanding", c.get("shares_out", 0.0)) or 0.0)
-    share_price = float(c.get("Share price USD", c.get("share_price", 0.0)) or 0.0)
+    shares_out = float(
+        c.get("Shares Outstanding", c.get("shares_out", 0.0)) or 0.0)
+    share_price = float(
+        c.get("Share price USD", c.get("share_price", 0.0)) or 0.0)
 
     net_nav_usd = treasury_usd - liab
     nav_per_share = (net_nav_usd / shares_out) if shares_out > 0 else None
-    mnav = (share_price / nav_per_share) if nav_per_share and nav_per_share > 0 else None
+    mnav = (share_price /
+            nav_per_share) if nav_per_share and nav_per_share > 0 else None
 
     mcap_usd = float(c.get("market_cap_usd", 0.0) or 0.0)
     pct_of_mcap = (treasury_usd / mcap_usd) * 100 if mcap_usd > 0 else 0.0
@@ -587,12 +620,17 @@ if analysis_key == "overview":
     st.subheader("Overview")
     total_treasury = np.nansum(df_view["Treasury USD"])
     total_liabilities = np.nansum(df_view["Total Liabilities"])
-    avg_mnav_series = df_view["MNAV (x)"].replace([np.inf, -np.inf], np.nan).dropna()
-    avg_mnav_value = float(avg_mnav_series.mean()) if not avg_mnav_series.empty else np.nan
+    avg_mnav_series = df_view["MNAV (x)"].replace(
+        [np.inf, -np.inf], np.nan).dropna()
+    avg_mnav_value = float(avg_mnav_series.mean()
+                           ) if not avg_mnav_series.empty else np.nan
     c1, c2, c3 = st.columns(3)
-    c1.metric("Total Treasury", fmt_abbrev(total_treasury), help="Sum of BTC, ETH and stablecoin holdings across the filtered companies")
-    c2.metric("Total Liabilities", fmt_abbrev(total_liabilities), help="Sum of reported liabilities for the filtered companies")
-    c3.metric("Average MNAV", f"{avg_mnav_value:.2f}x" if pd.notnull(avg_mnav_value) else "–", help="Mean of MNAV (market cap / net asset value)")
+    c1.metric("Total Treasury", fmt_abbrev(total_treasury),
+              help="Sum of BTC, ETH and stablecoin holdings across the filtered companies")
+    c2.metric("Total Liabilities", fmt_abbrev(total_liabilities),
+              help="Sum of reported liabilities for the filtered companies")
+    c3.metric("Average MNAV", f"{avg_mnav_value:.2f}x" if pd.notnull(
+        avg_mnav_value) else "–", help="Mean of MNAV (market cap / net asset value)")
     st.caption(f"Filtered rows: {len(df_view)} / {len(df)}")
     # Display live crypto prices with 24‑hour percentage change beneath the overview metrics
     render_live_prices(prices, pct_change)
@@ -607,7 +645,8 @@ elif analysis_key == "treasury":
         selected_tickers = render_company_selector(df_view)
 
     # Filter the DataFrame based on selected tickers (if any)
-    df_view_local = df_view[df_view["Ticker"].isin(selected_tickers)] if selected_tickers else df_view
+    df_view_local = df_view[df_view["Ticker"].isin(
+        selected_tickers)] if selected_tickers else df_view
 
     data_top = df_view_local[["Ticker", "name", "Treasury USD"]].dropna()
     if data_top.empty:
@@ -617,27 +656,35 @@ elif analysis_key == "treasury":
         st.stop()
 
     # Top‑10 by Treasury
-    _top = data_top.sort_values("Treasury USD", ascending=False).head(10).copy()
+    _top = data_top.sort_values(
+        "Treasury USD", ascending=False).head(10).copy()
 
     if HAS_PLOTLY:
         df_plot = _top.copy()
-        df_plot["value_str"] = df_plot["Treasury USD"].apply(_format_number_no_currency)
+        # Format the numeric values for display in the hover; we will not put these on the bars.
+        df_plot["value_str"] = df_plot["Treasury USD"].apply(
+            _format_number_no_currency)
 
-        max_val_top = df_plot["Treasury USD"].max() if not df_plot["Treasury USD"].empty else 0
+        max_val_top = df_plot["Treasury USD"].max(
+        ) if not df_plot["Treasury USD"].empty else 0
         if max_val_top and max_val_top > 0:
             tickvals_top = np.linspace(0, max_val_top, 5)
-            ticktext_top = [_format_number_no_currency(v) for v in tickvals_top]
+            ticktext_top = [_format_number_no_currency(
+                v) for v in tickvals_top]
         else:
             tickvals_top = [0]
             ticktext_top = ["0"]
 
+        # Build the bar chart without specifying a text column. Instead, pass the formatted
+        # value via custom_data so it can be used in the hover template. This prevents
+        # numbers from being drawn on top of the bars.
         fig_top = px.bar(
             df_plot,
             x="Ticker",
             y="Treasury USD",
-            text="value_str",
             hover_data=["name"],
             title=None,
+            custom_data=["value_str"],
         )
         fig_top.update_yaxes(
             title="Treasury (USD)",
@@ -646,9 +693,10 @@ elif analysis_key == "treasury":
             tickvals=tickvals_top,
             ticktext=ticktext_top,
         )
+        # Remove text labels from bars by not setting texttemplate. Use hovertemplate to show
+        # the value string stored in custom_data instead.
         fig_top.update_traces(
-            texttemplate="%{text}",
-            hovertemplate="<b>%{x}</b><br>Treasury: %{text}<extra></extra>",
+            hovertemplate="<b>%{x}</b><br>Treasury: %{customdata[0]}<extra></extra>",
         )
         graph_col.plotly_chart(fig_top, use_container_width=True)
     else:
@@ -657,7 +705,8 @@ elif analysis_key == "treasury":
             .mark_bar()
             .encode(
                 x="Ticker:N",
-                y=alt.Y("Treasury USD:Q", title="Treasury (USD)", scale=alt.Scale(type="linear")),
+                y=alt.Y("Treasury USD:Q", title="Treasury (USD)",
+                        scale=alt.Scale(type="linear")),
                 tooltip=["Ticker", "name", "Treasury USD"],
             )
             .properties(title=None)
@@ -670,162 +719,205 @@ elif analysis_key == "treasury":
 
 
 elif analysis_key == "market_vs_treasury":
+    # Rebuilt from scratch: grouped (double) bar chart comparing Market Cap vs Treasury
     st.subheader("Market Cap vs Treasury (Grouped Bars)")
-    st.caption(
-        "Two bars per company — compare total Market Cap vs Crypto Treasury. Sorted by Treasury as % of Market Cap."
+    st.caption("Two bars per company — Market Cap vs Crypto Treasury.")
+
+    # Selector (reuse your existing selector util if present)
+    graph_col, select_col = st.columns([6, 1])
+    with select_col:
+        try:
+            selected_tickers = render_company_selector(
+                df_view)  # must exist elsewhere in your app
+        except Exception:
+            # Fallback: select all if helper not present
+            selected_tickers = list(df_view["Ticker"].astype(str).unique())
+
+    # Filter rows by selection
+    df_view_local = df_view[df_view["Ticker"].astype(str).isin(
+        selected_tickers)] if selected_tickers else df_view.copy()
+
+    # Compute crypto holdings (BTC and ETH) in USD and the ratio to market cap for hover
+    df_view_local["Crypto Holdings USD"] = (
+        df_view_local["BTC"].astype(float).fillna(0.0) * float(prices.get("BTC") or 0) +
+        df_view_local["ETH"].astype(float).fillna(
+            0.0) * float(prices.get("ETH") or 0)
+    )
+    df_view_local["Holdings_vs_MktPct"] = df_view_local.apply(
+        lambda row: (row["Crypto Holdings USD"] / row["Mkt Cap (USD)"])
+        if pd.notnull(row["Mkt Cap (USD)"]) and float(row["Mkt Cap (USD)"]) > 0 else 0.0,
+        axis=1,
     )
 
-    # Two‑column layout: chart and selector
+    # Keep only required columns and coerce types
+    required_cols = ["Ticker", "name", "Treasury USD",
+                     "Mkt Cap (USD)", "Crypto Holdings USD", "Holdings_vs_MktPct"]
+    missing = [c for c in required_cols if c not in df_view_local.columns]
+    if missing:
+        graph_col.error(f"Missing columns for chart: {missing}")
+    else:
+        d = df_view_local[required_cols].copy()
+        d["Ticker"] = d["Ticker"].astype(str)
+        d["Treasury USD"] = pd.to_numeric(d["Treasury USD"], errors="coerce")
+        d["Mkt Cap (USD)"] = pd.to_numeric(d["Mkt Cap (USD)"], errors="coerce")
+        # Drop rows with no usable values
+        d = d.dropna(subset=["Treasury USD", "Mkt Cap (USD)"], how="all")
+
+        # Long form: two rows per ticker
+        long = pd.melt(
+            d,
+            id_vars=["Ticker", "name"],
+            value_vars=["Mkt Cap (USD)", "Treasury USD"],
+            var_name="Metric",
+            value_name="USD",
+        ).dropna(subset=["USD"])
+
+        if long.empty:
+            graph_col.info(
+                "No data to plot. Check selected tickers and column names.")
+        else:
+            long["USD"] = long["USD"].astype(float)
+            ticker_order = d["Ticker"].tolist()
+
+            # Merge metadata so each bar row has our computed hover values
+            long = long.merge(
+                d[["Ticker", "Crypto Holdings USD",
+                    "Mkt Cap (USD)", "Holdings_vs_MktPct"]],
+                on="Ticker",
+                how="left",
+            )
+            long["Crypto Holdings USD"] = long["Crypto Holdings USD"].fillna(
+                0.0)
+            long["Holdings_vs_MktPct"] = long["Holdings_vs_MktPct"].fillna(0.0)
+            long["Mkt Cap (USD)"] = long["Mkt Cap (USD)"].fillna(0.0)
+
+            # Try Plotly first; fall back to Altair
+            try:
+                import plotly.express as px
+                import numpy as np
+
+                max_y = float(long["USD"].max() or 0.0)
+                if max_y <= 0:
+                    max_y = 1.0
+                tickvals = np.linspace(0, max_y, 5)
+                ticktext = [f"{v/1e9:.2f}B" for v in tickvals]
+
+                fig = px.bar(
+                    long,
+                    x="Ticker",
+                    y="USD",
+                    color="Metric",
+                    barmode="group",
+                    category_orders={
+                        "Ticker": ticker_order,
+                        "Metric": ["Mkt Cap (USD)", "Treasury USD"],
+                    },
+                    hover_data=False,
+                    custom_data=["Crypto Holdings USD",
+                                 "Mkt Cap (USD)", "Holdings_vs_MktPct"],
+                    title=None,
+                )
+                fig.update_yaxes(
+                    title="Amount (B USD)",
+                    tickmode="array",
+                    tickvals=tickvals,
+                    ticktext=ticktext,
+                    rangemode="tozero",
+                )
+                fig.update_traces(
+                    hovertemplate=(
+                        "<b>%{x}</b><br>"
+                        "%{fullData.name}: $%{y:,.0f}<br>"
+                        "Crypto Holdings (BTC/ETH): $%{customdata[0]:,.0f}<br>"
+                        "Market Cap: $%{customdata[1]:,.0f}<br>"
+                        "Holdings as % of Mkt Cap: %{customdata[2]:.2%}"
+                        "<extra></extra>"
+                    )
+                )
+                fig.update_layout(
+                    legend_title_text="",
+                    margin=dict(t=10, b=10, l=10, r=10),
+                    bargap=0.15,
+                    bargroupgap=0.05,
+                )
+                graph_col.plotly_chart(fig, use_container_width=True)
+            except Exception:
+                import altair as alt
+                alt_long = long.dropna(
+                    subset=["USD", "Ticker", "Metric"]).copy()
+                alt_long = alt_long[alt_long["USD"].astype(float) >= 0]
+                alt_long["Ticker"] = alt_long["Ticker"].astype(str)
+                alt_long["USD_B"] = alt_long["USD"] / 1e9
+
+                chart = (
+                    alt.Chart(alt_long)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X("Ticker:N", sort=ticker_order),
+                        xOffset=alt.XOffset("Metric:N"),
+                        y=alt.Y("USD_B:Q", title="Amount (B USD)",
+                                scale=alt.Scale(type="linear")),
+                        color=alt.Color("Metric:N", title=""),
+                        tooltip=[
+                            alt.Tooltip("Ticker:N"),
+                            alt.Tooltip("Metric:N"),
+                            alt.Tooltip(
+                                "USD:Q", title="Value (USD)", format=",.0f"),
+                            alt.Tooltip(
+                                "Crypto Holdings USD:Q", title="Crypto Holdings (USD)", format=",.0f"),
+                            alt.Tooltip("Mkt Cap (USD):Q",
+                                        title="Market Cap", format=",.0f"),
+                            alt.Tooltip(
+                                "Holdings_vs_MktPct:Q", title="Holdings % of Mkt Cap", format=".2%"),
+                        ],
+                    )
+                    # Remove 'title=None' here—Altair v5 requires titles to be strings
+                    .properties(height=620)
+                )
+                graph_col.altair_chart(chart, use_container_width=True)
+
+    # Optional: keep live prices below (if your helper exists)
+    try:
+        render_live_prices(prices, pct_change)
+    except Exception:
+        pass
+    st.stop()
+
+
+elif analysis_key == "valuation":
+    st.subheader("Liabilities vs Net Crypto NAV")
+    st.caption("Compare total liabilities against net crypto NAV across companies")
+    # Two‑column layout: chart and selector (match width of Market Cap vs Treasury chart)
     graph_col, select_col = st.columns([6, 1])
     with select_col:
         selected_tickers = render_company_selector(df_view)
 
-    # Filter rows by selection (if any)
-    df_view_local = (
-        df_view[df_view["Ticker"].isin(selected_tickers)] if selected_tickers else df_view
-    )
-
-    # Keep only the needed columns and coerce to numeric for calculations
-    d = df_view_local[["Ticker", "name", "Treasury USD", "Mkt Cap (USD)"]].copy()
-    d["Treasury USD"] = pd.to_numeric(d["Treasury USD"], errors="coerce")
-    d["Mkt Cap (USD)"] = pd.to_numeric(d["Mkt Cap (USD)"], errors="coerce")
-
-    # Drop rows with missing/zero market cap to avoid divide-by-zero and invalid bars
-    d = d.replace([np.inf, -np.inf], np.nan).dropna(subset=["Mkt Cap (USD)"])
-    d = d[d["Mkt Cap (USD)"] > 0]
-    if d.empty:
-        graph_col.info("No data available for grouped bars.")
-        render_live_prices(prices, pct_change)
-        st.stop()
-
-    # Sort by treasury as % of market cap
-    d["T%MCap"] = (d["Treasury USD"] / d["Mkt Cap (USD)"]) * 100
-    d = d.sort_values("T%MCap", ascending=False)
-
-    # Transform to long format for bar chart
-    long = d.melt(
-        id_vars=["Ticker", "T%MCap", "Mkt Cap (USD)", "Treasury USD"],
-        value_vars=["Mkt Cap (USD)", "Treasury USD"],
-        var_name="Metric",
-        value_name="USD",
-    )
-
-    if HAS_PLOTLY:
-        # Attach baseline values to long dataframe for custom hover text
-        m = d.set_index("Ticker")
-        long["mcap_base"] = long["Ticker"].map(m["Mkt Cap (USD)"])
-        long["treasury_base"] = long["Ticker"].map(m["Treasury USD"])
-        long["pct_of_mcap"] = np.where(
-            long["mcap_base"] > 0,
-            (long["treasury_base"] / long["mcap_base"]) * 100,
-            np.nan,
-        )
-
-        # Compute y-axis ticks in billions
-        max_y = float(long["USD"].max() or 0.0)
-        if max_y > 0:
-            tickvals = np.linspace(0, max_y, 5)
-            ticktext = [f"{v/1e9:.2f}B" for v in tickvals]
-        else:
-            tickvals, ticktext = [0], ["0B"]
-
-        # Create grouped bar chart
-        fig = px.bar(
-            long,
-            x="Ticker",
-            y="USD",
-            color="Metric",
-            barmode="group",
-            category_orders={
-                "Ticker": list(d["Ticker"]),
-                "Metric": ["Mkt Cap (USD)", "Treasury USD"],
-            },
-            custom_data=["mcap_base", "treasury_base", "pct_of_mcap"],
-            title=None,
-        )
-
-        # Format y-axis ticks and expand chart size
-        fig.update_yaxes(
-            title="Amount (B USD)", tickmode="array", tickvals=tickvals, ticktext=ticktext
-        )
-        fig.update_layout(
-            legend_title_text="",
-            margin=dict(t=10, b=10, l=10, r=10),
-            bargap=0.15,
-            bargroupgap=0.05,
-            height=800,
-            width=1200,
-        )
-        # Custom hover template to display base values and percentage
-        fig.update_traces(
-            hovertemplate=(
-                "<b>%{x}</b><br>"
-                "Market Cap: %{customdata[0]:,.0f}<br>"
-                "Treasury: %{customdata[1]:,.0f}<br>"
-                "Treasury % of Market Cap: %{customdata[2]:.2f}%"
-                "<extra></extra>"
-            )
-        )
-
-        graph_col.plotly_chart(fig, use_container_width=True)
-    else:
-        # Altair fallback: grouped bars with offset
-        import altair as alt
-
-        alt_long = long.dropna(subset=["USD", "Ticker", "Metric"]).copy()
-        alt_long = alt_long[alt_long["USD"] >= 0]
-        alt_long["USD_B"] = alt_long["USD"] / 1e9
-
-        chart = (
-            alt.Chart(alt_long)
-            .mark_bar()
-            .encode(
-                x=alt.X("Ticker:N", sort=list(d["Ticker"])),
-                xOffset=alt.XOffset("Metric:N"),
-                y=alt.Y(
-                    "USD_B:Q",
-                    title="Amount (B USD)",
-                    scale=alt.Scale(type="linear"),
-                ),
-                color=alt.Color("Metric:N", title=""),
-                tooltip=[
-                    alt.Tooltip("Ticker:N"),
-                    alt.Tooltip("Metric:N"),
-                    alt.Tooltip("USD:Q", title="Value (USD)", format=",.0f"),
-                    alt.Tooltip(
-                        "Mkt Cap (USD):Q", title="Market Cap", format=",.0f"
-                    ),
-                    alt.Tooltip("Treasury USD:Q", title="Treasury", format=",.0f"),
-                    alt.Tooltip(
-                        "T%MCap:Q",
-                        title="Treasury % of MktCap",
-                        format=".2f",
-                    ),
-                ],
-            )
-            .properties(title=None, height=800, width=1200)
-        )
-        graph_col.altair_chart(chart, use_container_width=True)
-
-    # Keep live prices under the chart
-    render_live_prices(prices, pct_change)
-    st.stop()
-elif analysis_key == "valuation":
-    st.subheader("Liabilities vs Net Crypto NAV")
-    st.caption("Compare total liabilities against net crypto NAV across companies")
-    # Two‑column layout: chart and selector
-    graph_col, select_col = st.columns([4, 1])
-    with select_col:
-        selected_tickers = render_company_selector(df_view)
-
-    df_view_local = df_view[df_view["Ticker"].isin(selected_tickers)] if selected_tickers else df_view
-    liab_nav_df = df_view_local[["Ticker", "Total Liabilities", "Net Crypto NAV"]].dropna()
+    df_view_local = df_view[df_view["Ticker"].isin(
+        selected_tickers)] if selected_tickers else df_view
+    liab_nav_df = df_view_local[[
+        "Ticker", "Total Liabilities", "Net Crypto NAV"]].dropna()
     if liab_nav_df.empty:
         graph_col.info("No data for liabilities vs Net Crypto NAV chart.")
         render_live_prices(prices, pct_change)
         st.stop()
 
-    liab_nav_df_sorted = liab_nav_df.sort_values("Net Crypto NAV", ascending=False)
+    # Sort companies by Net Crypto NAV and compute the liabilities/NAV ratio
+    liab_nav_df_sorted = liab_nav_df.sort_values(
+        "Net Crypto NAV", ascending=False).copy()
+    liab_nav_df_sorted["LiabPctNAV"] = liab_nav_df_sorted.apply(
+        lambda row: (row["Total Liabilities"] / row["Net Crypto NAV"])
+        if pd.notnull(row["Net Crypto NAV"]) and float(row["Net Crypto NAV"]) != 0 else 0.0,
+        axis=1,
+    )
+
+    # Determine the maximum liabilities/NAV ratio for scaling the secondary y‑axis and Altair line
+    max_ratio = (
+        liab_nav_df_sorted["LiabPctNAV"].max()
+        if not liab_nav_df_sorted["LiabPctNAV"].empty
+        else 0.0
+    )
+
+    # Prepare a long-form dataframe for grouped bars
     liab_nav_long = liab_nav_df_sorted.melt(
         id_vars=["Ticker"],
         value_vars=["Total Liabilities", "Net Crypto NAV"],
@@ -837,7 +929,8 @@ elif analysis_key == "valuation":
         liab_nav_long = liab_nav_long.copy()
         liab_nav_long["Amount_B"] = liab_nav_long["Amount"] / 1e9
 
-        max_val_ln = liab_nav_long["Amount"].max() if not liab_nav_long["Amount"].empty else 0
+        max_val_ln = liab_nav_long["Amount"].max(
+        ) if not liab_nav_long["Amount"].empty else 0
         if max_val_ln and max_val_ln > 0:
             tickvals_ln = np.linspace(0, max_val_ln, 5)
             ticktext_ln = [f"{v/1e9:.2f}B" for v in tickvals_ln]
@@ -845,14 +938,16 @@ elif analysis_key == "valuation":
             tickvals_ln = [0]
             ticktext_ln = ["0B"]
 
+        # Bar chart (no on-bar labels)
         fig_ln = px.bar(
             liab_nav_long,
             x="Ticker",
             y="Amount",
             color="Metric",
             barmode="group",
-            text="Amount_B",
             title=None,
+            # used for hover formatting, not for text on bars
+            custom_data=["Amount_B"],
         )
         fig_ln.update_yaxes(
             title="Amount (B USD)",
@@ -862,22 +957,71 @@ elif analysis_key == "valuation":
             ticktext=ticktext_ln,
         )
         fig_ln.update_traces(
-            texttemplate="%{text:.2f}B",
-            hovertemplate="<b>%{x}</b><br>%{fullData.name}: %{text:.2f}B<extra></extra>",
+            hovertemplate=(
+                "<b>%{x}</b><br>"
+                "%{fullData.name}: $%{y:,.0f}<br>"
+                "Amount (B USD): %{customdata[0]:.2f}B"
+                "<extra></extra>"
+            )
         )
-        fig_ln.update_layout(legend=dict(orientation="v", y=1, x=1.02))
+
+        # Overlay a line showing liabilities as a percentage of Net Crypto NAV (secondary axis)
+        import plotly.graph_objects as go
+
+        ratio_df = liab_nav_df_sorted[["Ticker", "LiabPctNAV"]]
+        fig_ln.add_trace(
+            go.Scatter(
+                x=ratio_df["Ticker"],
+                y=ratio_df["LiabPctNAV"],
+                mode="lines+markers",
+                name="Liabilities / NAV (%)",
+                yaxis="y2",
+            )
+        )
+        fig_ln.update_layout(
+            legend=dict(orientation="v", y=1, x=1.02),
+            yaxis2=dict(
+                overlaying="y",
+                side="right",
+                title="Liabilities / NAV (%)",
+                tickformat=".0%",
+                # Force the secondary axis to start at 0 so zero ratios sit on the baseline
+                range=[0, max_ratio if max_ratio > 0 else 1],
+            ),
+        )
         graph_col.plotly_chart(fig_ln, use_container_width=True)
     else:
-        ln_chart = (
+        # Altair fallback: grouped bars with a line overlay on a fixed domain
+        bars = (
             alt.Chart(liab_nav_long)
             .mark_bar()
             .encode(
                 x="Ticker:N",
-                y=alt.Y("Amount:Q", title="Amount (USD)", scale=alt.Scale(type="linear")),
+                y=alt.Y("Amount:Q", title="Amount (USD)",
+                        scale=alt.Scale(type="linear")),
                 color="Metric:N",
                 tooltip=["Ticker", "Metric", "Amount"],
             )
-            .properties(title=None)
+        )
+        line = (
+            alt.Chart(liab_nav_df_sorted)
+            .mark_line(color='black')
+            .encode(
+                x="Ticker:N",
+                y=alt.Y(
+                    "LiabPctNAV:Q",
+                    axis=alt.Axis(title="Liabilities / NAV (%)", format=".0%"),
+                    # Set domain so ratios start at 0; default upper bound to 1 if no data
+                    scale=alt.Scale(
+                        domain=[0, max_ratio if max_ratio > 0 else 1], nice=False),
+                ),
+            )
+        )
+        ln_chart = (
+            alt.layer(bars, line)
+            .resolve_scale(y='independent')
+            # match the Market Cap vs Treasury chart height
+            .properties(height=620)
         )
         graph_col.altair_chart(ln_chart, use_container_width=True)
 
@@ -892,7 +1036,8 @@ elif analysis_key == "table":
     with select_col:
         selected_tickers = render_company_selector(df_view)
 
-    df_view_local = df_view[df_view["Ticker"].isin(selected_tickers)] if selected_tickers else df_view
+    df_view_local = df_view[df_view["Ticker"].isin(
+        selected_tickers)] if selected_tickers else df_view
     df_display = df_view_local.copy()
     for col in ["Mkt Cap (USD)", "Treasury USD", "Total Liabilities", "Net Crypto NAV"]:
         if col in df_display.columns:
@@ -907,7 +1052,8 @@ elif analysis_key == "table":
             lambda x: f"${x:,.2f}" if pd.notnull(x) else "–"
         )
     if "% of Mkt Cap" in df_display.columns:
-        df_display["% of Mkt Cap"] = df_display["% of Mkt Cap"].apply(lambda x: f"{x:.2f}%")
+        df_display["% of Mkt Cap"] = df_display["% of Mkt Cap"].apply(
+            lambda x: f"{x:.2f}%")
     if "MNAV (x)" in df_display.columns:
         df_display["MNAV (x)"] = df_display["MNAV (x)"].apply(
             lambda x: f"{x:.2f}x" if pd.notnull(x) else "–"
@@ -917,18 +1063,19 @@ elif analysis_key == "table":
     render_live_prices(prices, pct_change)
     st.stop()
 
-
-
     # ------------------------------------------------------------------
     # Sub‑tab 3: Liabilities vs Net Crypto NAV
     # ------------------------------------------------------------------
     with sub_tab3:
         st.markdown("#### Liabilities vs Net Crypto NAV")
-        st.caption("Compare total liabilities against net crypto NAV across companies")
-        liab_nav_df = df_view[["Ticker", "Total Liabilities", "Net Crypto NAV"]].dropna()
+        st.caption(
+            "Compare total liabilities against net crypto NAV across companies")
+        liab_nav_df = df_view[[
+            "Ticker", "Total Liabilities", "Net Crypto NAV"]].dropna()
         if not liab_nav_df.empty:
             # Sort by Net Crypto NAV descending for clearer ordering
-            liab_nav_df_sorted = liab_nav_df.sort_values("Net Crypto NAV", ascending=False)
+            liab_nav_df_sorted = liab_nav_df.sort_values(
+                "Net Crypto NAV", ascending=False)
             liab_nav_long = liab_nav_df_sorted.melt(
                 id_vars=["Ticker"],
                 value_vars=["Total Liabilities", "Net Crypto NAV"],
@@ -939,7 +1086,8 @@ elif analysis_key == "table":
                 liab_nav_long = liab_nav_long.copy()
                 liab_nav_long["Amount_B"] = liab_nav_long["Amount"] / 1e9
                 max_val_ln = (
-                    liab_nav_long["Amount"].max() if not liab_nav_long["Amount"].empty else 0
+                    liab_nav_long["Amount"].max(
+                    ) if not liab_nav_long["Amount"].empty else 0
                 )
                 if max_val_ln and max_val_ln > 0:
                     tickvals_ln = np.linspace(0, max_val_ln, 5)
@@ -977,16 +1125,10 @@ elif analysis_key == "table":
                     .mark_bar()
                     .encode(
                         x="Ticker:N",
-                        y=alt.Y("Amount:Q", title="Amount (USD)", scale=alt.Scale(type="linear")),
+                        y=alt.Y("Amount:Q", title="Amount (USD)",
+                                scale=alt.Scale(type="linear")),
                         color="Metric:N",
-                        tooltip=[
-                            alt.Tooltip("Ticker:N"),
-                            alt.Tooltip("Metric:N"),
-                            alt.Tooltip("USD:Q", title="Value (USD)", format=",.0f"),
-                            alt.Tooltip("Mkt Cap (USD):Q", title="Market Cap", format=",.0f"),
-                            alt.Tooltip("Treasury USD:Q", title="Treasury", format=",.0f"),
-                            alt.Tooltip("T%MCap:Q", title="Treasury % of MktCap", format=".2f"),
-                        ],
+                        tooltip=["Ticker", "Metric", "Amount"],
                     )
                     .properties(title=None)
                 )
@@ -1002,13 +1144,17 @@ with tab_table:
         if col in df_display.columns:
             df_display[col] = df_display[col].apply(fmt_abbrev)
     if "NAV per share" in df_display.columns:
-        df_display["NAV per share"] = df_display["NAV per share"].apply(lambda x: f"${x:,.2f}" if pd.notnull(x) else "–")
+        df_display["NAV per share"] = df_display["NAV per share"].apply(
+            lambda x: f"${x:,.2f}" if pd.notnull(x) else "–")
     if "Share price USD" in df_display.columns:
-        df_display["Share price USD"] = df_display["Share price USD"].apply(lambda x: f"${x:,.2f}" if pd.notnull(x) else "–")
+        df_display["Share price USD"] = df_display["Share price USD"].apply(
+            lambda x: f"${x:,.2f}" if pd.notnull(x) else "–")
     if "% of Mkt Cap" in df_display.columns:
-        df_display["% of Mkt Cap"] = df_display["% of Mkt Cap"].apply(lambda x: f"{x:.2f}%")
+        df_display["% of Mkt Cap"] = df_display["% of Mkt Cap"].apply(
+            lambda x: f"{x:.2f}%")
     if "MNAV (x)" in df_display.columns:
-        df_display["MNAV (x)"] = df_display["MNAV (x)"].apply(lambda x: f"{x:.2f}x" if pd.notnull(x) else "–")
+        df_display["MNAV (x)"] = df_display["MNAV (x)"].apply(
+            lambda x: f"{x:.2f}x" if pd.notnull(x) else "–")
     st.dataframe(df_display, use_container_width=True)
 
 # -------------------- Table (formatted) -------------------------
