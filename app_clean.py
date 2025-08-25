@@ -671,46 +671,57 @@ elif analysis_key == "treasury":
 
 elif analysis_key == "market_vs_treasury":
     st.subheader("Market Cap vs Treasury (Grouped Bars)")
-    st.caption("Two bars per company — compare total Market Cap vs Crypto Treasury. Sorted by Treasury as % of Market Cap.")
+    st.caption(
+        "Two bars per company — compare total Market Cap vs Crypto Treasury. Sorted by Treasury as % of Market Cap."
+    )
 
-    # Two-column layout: chart and selector (re-use your checkbox list)
+    # Two‑column layout: chart and selector
     graph_col, select_col = st.columns([6, 1])
     with select_col:
         selected_tickers = render_company_selector(df_view)
-   
-
 
     # Filter rows by selection (if any)
-    df_view_local = df_view[df_view["Ticker"].isin(selected_tickers)] if selected_tickers else df_view
+    df_view_local = (
+        df_view[df_view["Ticker"].isin(selected_tickers)] if selected_tickers else df_view
+    )
 
-    # Keep only the needed columns and make safe numerics
+    # Keep only the needed columns and coerce to numeric for calculations
     d = df_view_local[["Ticker", "name", "Treasury USD", "Mkt Cap (USD)"]].copy()
     d["Treasury USD"] = pd.to_numeric(d["Treasury USD"], errors="coerce")
     d["Mkt Cap (USD)"] = pd.to_numeric(d["Mkt Cap (USD)"], errors="coerce")
 
-    # Drop rows with missing/zero market cap to avoid div-by-zero & bad sorting
+    # Drop rows with missing/zero market cap to avoid divide-by-zero and invalid bars
     d = d.replace([np.inf, -np.inf], np.nan).dropna(subset=["Mkt Cap (USD)"])
     d = d[d["Mkt Cap (USD)"] > 0]
-
     if d.empty:
         graph_col.info("No data available for grouped bars.")
         render_live_prices(prices, pct_change)
         st.stop()
 
-    # Sort by dependency: Treasury as % of Market Cap
+    # Sort by treasury as % of market cap
     d["T%MCap"] = (d["Treasury USD"] / d["Mkt Cap (USD)"]) * 100
     d = d.sort_values("T%MCap", ascending=False)
 
+    # Transform to long format for bar chart
     long = d.melt(
-        id_vars=["Ticker", "T%MCap", "Mkt Cap (USD)", "Treasury USD"],  # include market cap and treasury for hover/tooltip
+        id_vars=["Ticker", "T%MCap", "Mkt Cap (USD)", "Treasury USD"],
         value_vars=["Mkt Cap (USD)", "Treasury USD"],
         var_name="Metric",
         value_name="USD",
     )
 
-
     if HAS_PLOTLY:
-        # Nice y-axis ticks in billions
+        # Attach baseline values to long dataframe for custom hover text
+        m = d.set_index("Ticker")
+        long["mcap_base"] = long["Ticker"].map(m["Mkt Cap (USD)"])
+        long["treasury_base"] = long["Ticker"].map(m["Treasury USD"])
+        long["pct_of_mcap"] = np.where(
+            long["mcap_base"] > 0,
+            (long["treasury_base"] / long["mcap_base"]) * 100,
+            np.nan,
+        )
+
+        # Compute y-axis ticks in billions
         max_y = float(long["USD"].max() or 0.0)
         if max_y > 0:
             tickvals = np.linspace(0, max_y, 5)
@@ -718,70 +729,87 @@ elif analysis_key == "market_vs_treasury":
         else:
             tickvals, ticktext = [0], ["0B"]
 
+        # Create grouped bar chart
         fig = px.bar(
             long,
             x="Ticker",
             y="USD",
             color="Metric",
             barmode="group",
+            category_orders={
+                "Ticker": list(d["Ticker"]),
+                "Metric": ["Mkt Cap (USD)", "Treasury USD"],
+            },
+            custom_data=["mcap_base", "treasury_base", "pct_of_mcap"],
             title=None,
-            labels={
-                "USD": "Value (USD)",
-                "Mkt Cap (USD)": "Market Cap",
-                "Treasury USD": "Treasury",
-                "T%MCap": "Treasury % of Market Cap",
-            },
-            hover_data={
-                "T%MCap": ":.2f",
-                "Mkt Cap (USD)": ":,.0f",
-                "Treasury USD": ":,.0f",
-                "USD": False,
-            },
         )
+
+        # Format y-axis ticks and expand chart size
         fig.update_yaxes(
-            title="Amount (B USD)",
-            tickmode="array",
-            tickvals=tickvals,
-            ticktext=ticktext,
+            title="Amount (B USD)", tickmode="array", tickvals=tickvals, ticktext=ticktext
         )
-        fig.update_layout(legend_title="", margin=dict(t=60, l=0, r=0, b=0))
-
-        # clean legend + margins + bigger canvas
         fig.update_layout(
-            legend_title="",
-            margin=dict(t=50, l=0, r=0, b=0),
-            height=620
+            legend_title_text="",
+            margin=dict(t=10, b=10, l=10, r=10),
+            bargap=0.15,
+            bargroupgap=0.05,
+            height=800,
+            width=1200,
+        )
+        # Custom hover template to display base values and percentage
+        fig.update_traces(
+            hovertemplate=(
+                "<b>%{x}</b><br>"
+                "Market Cap: %{customdata[0]:,.0f}<br>"
+                "Treasury: %{customdata[1]:,.0f}<br>"
+                "Treasury % of Market Cap: %{customdata[2]:.2f}%"
+                "<extra></extra>"
+            )
         )
 
-        # Display the plot
         graph_col.plotly_chart(fig, use_container_width=True)
-
     else:
-        # Altair fallback
+        # Altair fallback: grouped bars with offset
         import altair as alt
+
+        alt_long = long.dropna(subset=["USD", "Ticker", "Metric"]).copy()
+        alt_long = alt_long[alt_long["USD"] >= 0]
+        alt_long["USD_B"] = alt_long["USD"] / 1e9
+
         chart = (
-            alt.Chart(long)
+            alt.Chart(alt_long)
             .mark_bar()
             .encode(
                 x=alt.X("Ticker:N", sort=list(d["Ticker"])),
-                y=alt.Y("USD:Q", title="Amount (USD)", scale=alt.Scale(type="linear")),
+                xOffset=alt.XOffset("Metric:N"),
+                y=alt.Y(
+                    "USD_B:Q",
+                    title="Amount (B USD)",
+                    scale=alt.Scale(type="linear"),
+                ),
                 color=alt.Color("Metric:N", title=""),
                 tooltip=[
                     alt.Tooltip("Ticker:N"),
                     alt.Tooltip("Metric:N"),
                     alt.Tooltip("USD:Q", title="Value (USD)", format=",.0f"),
-                    alt.Tooltip("Mkt Cap (USD):Q", title="Market Cap", format=",.0f"),
+                    alt.Tooltip(
+                        "Mkt Cap (USD):Q", title="Market Cap", format=",.0f"
+                    ),
                     alt.Tooltip("Treasury USD:Q", title="Treasury", format=",.0f"),
-                    alt.Tooltip("T%MCap:Q", title="Treasury % of MktCap", format=".2f")
-                ]
+                    alt.Tooltip(
+                        "T%MCap:Q",
+                        title="Treasury % of MktCap",
+                        format=".2f",
+                    ),
+                ],
             )
+            .properties(title=None, height=800, width=1200)
         )
         graph_col.altair_chart(chart, use_container_width=True)
 
     # Keep live prices under the chart
     render_live_prices(prices, pct_change)
     st.stop()
-
 elif analysis_key == "valuation":
     st.subheader("Liabilities vs Net Crypto NAV")
     st.caption("Compare total liabilities against net crypto NAV across companies")
@@ -951,7 +979,14 @@ elif analysis_key == "table":
                         x="Ticker:N",
                         y=alt.Y("Amount:Q", title="Amount (USD)", scale=alt.Scale(type="linear")),
                         color="Metric:N",
-                        tooltip=["Ticker", "Metric", "Amount"],
+                        tooltip=[
+                            alt.Tooltip("Ticker:N"),
+                            alt.Tooltip("Metric:N"),
+                            alt.Tooltip("USD:Q", title="Value (USD)", format=",.0f"),
+                            alt.Tooltip("Mkt Cap (USD):Q", title="Market Cap", format=",.0f"),
+                            alt.Tooltip("Treasury USD:Q", title="Treasury", format=",.0f"),
+                            alt.Tooltip("T%MCap:Q", title="Treasury % of MktCap", format=".2f"),
+                        ],
                     )
                     .properties(title=None)
                 )
