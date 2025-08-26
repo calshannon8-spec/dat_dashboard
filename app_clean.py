@@ -25,6 +25,19 @@ APP_DIR = Path(__file__).parent.resolve()
 st.set_page_config(
     page_title="Digital Asset Treasury Dashboard", page_icon="🟠")
 
+st.markdown("""
+<style>
+/* Don't break radio/checkbox labels inside words anywhere in the app */
+div[role="radiogroup"] label div[data-testid="stMarkdownContainer"] p,
+div[data-testid="stCheckbox"] label div[data-testid="stMarkdownContainer"] p {
+  white-space: nowrap !important;
+  word-break: keep-all !important;
+  overflow-wrap: normal !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
 # ------------------------------------------------------------------
 # Intro / Glossary
 #
