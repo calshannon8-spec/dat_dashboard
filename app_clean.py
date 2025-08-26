@@ -33,8 +33,8 @@ st.markdown(
     """
     ### Digital Asset Treasury Dashboard
 
-    This dashboard provides insights into publicly listed companies that hold digital assets.  
-    Use the selector below to explore treasury composition, market capitalization versus crypto treasury, valuation & MNAV, and to view a full screener table.  
+    This dashboard provides insights into publicly listed companies that hold digital assets.
+    Use the selector below to explore treasury composition, market capitalization versus crypto treasury, valuation & MNAV, and to view a full screener table.
 
     **Glossary:**
     - **Net Crypto NAV**: Treasury USD minus total liabilities.
@@ -54,8 +54,10 @@ analysis_options = {
     "Treasury Composition": "treasury",
     "Market Cap vs Treasury": "market_vs_treasury",
     "Valuation & MNAV": "valuation",
+    "Holdings vs Price (Time Series)": "time_series",   # <- ADD THIS
     "Table": "table",
 }
+
 selected_analysis_label = st.selectbox(
     "Select analysis",
     list(analysis_options.keys()),
@@ -135,7 +137,12 @@ def render_company_selector(df_in: pd.DataFrame) -> list[str]:
     Render a list of checkboxes for each ticker in the provided DataFrame.
     Returns a list of tickers that are selected.
     """
-    st.markdown("##### Select Companies")
+    # Keep the heading on one line without changing column widths
+    st.markdown(
+        "<h5 style='white-space:nowrap; overflow-wrap:normal; word-break:normal; margin:0'>Select Companies</h5>",
+        unsafe_allow_html=True,
+    )
+
     selected: list[str] = []
     # Sort tickers alphabetically to ensure stable ordering
     for t in sorted(df_in["Ticker"].dropna().unique()):
@@ -143,7 +150,6 @@ def render_company_selector(df_in: pd.DataFrame) -> list[str]:
         if st.checkbox(t, value=True, key=f"selector_{t}"):
             selected.append(t)
     return selected
-# Note: conditional rendering based on analysis_key is implemented later in the script.
 
 
 # --------------------------- Helpers ----------------------------
@@ -307,6 +313,398 @@ def fmt_abbrev(v):
         return f"{sign}${n_abs/1_000_000:,.0f}M"
     else:
         return f"{sign}${n_abs:,.0f}"
+
+  # ---------------- Time-series (BTC/ETH holdings & prices) ----------------
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_treasury_timeseries() -> pd.DataFrame:
+    """
+    Loads time-series CSV from common locations.
+
+    Required columns (order does NOT matter):
+      date, btc_holdings, eth_holdings, btc_price_usd, eth_price_usd
+    Optional: Company, Ticker
+    """
+    from pathlib import Path
+
+    try:
+        base = APP_DIR  # defined elsewhere in your app
+    except NameError:
+        base = Path(__file__).resolve().parent
+
+    candidates = [
+        base / "data" / "treasuries_timeseries.csv",
+        Path.cwd() / "data" / "treasuries_timeseries.csv",
+        base / "treasuries_timeseries.csv",
+        Path.cwd() / "treasuries_timeseries.csv",
+    ]
+    path = next((p for p in candidates if p.exists()), None)
+    if path is None:
+        st.info("Add data/treasuries_timeseries.csv with columns (any order): "
+                "date, btc_holdings, eth_holdings, btc_price_usd, eth_price_usd")
+        return pd.DataFrame()
+
+    df = pd.read_csv(path)
+
+    # normalize headers to be order/case tolerant
+    norm = {c.lower().strip(): c for c in df.columns}
+    req = ["date", "btc_holdings", "eth_holdings",
+           "btc_price_usd", "eth_price_usd"]
+    missing = [k for k in req if k not in norm]
+    if missing:
+        st.error(
+            f"Timeseries CSV is missing columns: {missing}. Found: {list(df.columns)}")
+        return pd.DataFrame()
+
+    def to_num(s):
+        return pd.to_numeric(s.astype(str).str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
+
+    # ---- build required columns FIRST
+    out = pd.DataFrame({
+        "date": pd.to_datetime(df[norm["date"]]),
+        "btc_holdings": to_num(df[norm["btc_holdings"]]),
+        "eth_holdings": to_num(df[norm["eth_holdings"]]),
+        "btc_price_usd": to_num(df[norm["btc_price_usd"]]),
+        "eth_price_usd": to_num(df[norm["eth_price_usd"]]),
+    })
+
+    # ---- then add optional identifiers (only if present)
+    if "ticker" in norm:
+        out["Ticker"] = df[norm["ticker"]].astype(str)
+    if "company" in norm:
+        out["Company"] = df[norm["company"]].astype(str)
+
+    return out.sort_values("date").reset_index(drop=True)
+
+    df = pd.read_csv(path)
+
+    # normalize headers (order/case tolerant)
+    norm = {c.lower().strip(): c for c in df.columns}
+    required = ["date", "btc_holdings", "eth_holdings",
+                "btc_price_usd", "eth_price_usd"]
+    missing = [k for k in required if k not in norm]
+    if missing:
+        st.error(
+            f"Timeseries CSV is missing columns: {missing}. Found: {list(df.columns)}")
+        return pd.DataFrame()
+
+    def to_num(s):
+        return pd.to_numeric(s.astype(str).str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
+
+        out = pd.DataFrame({
+            "date": pd.to_datetime(df[norm["date"]]),
+            "btc_holdings": to_num(df[norm["btc_holdings"]]),
+            "eth_holdings": to_num(df[norm["eth_holdings"]]),
+            "btc_price_usd": to_num(df[norm["btc_price_usd"]]),
+            "eth_price_usd": to_num(df[norm["eth_price_usd"]]),
+        })
+
+    # Optional identifiers for filtering/stacking
+    if "ticker" in norm:
+        out["Ticker"] = df[norm["ticker"]].astype(str)
+    elif "company" in norm:
+        # fall back: use Company as a stand-in for Ticker if Ticker missing
+        out["Ticker"] = df[norm["company"]].astype(str)
+
+    if "company" in norm:
+        out["Company"] = df[norm["company"]].astype(str)
+
+    out = out.sort_values("date").reset_index(drop=True)
+    return out
+
+
+def render_holdings_vs_prices(ts_df: pd.DataFrame):
+    """
+    Stacked USD value of BTC + ETH over time with BTC/ETH price lines.
+    Hover: only on filled areas, shows date + $ value. Price lines are silent.
+    """
+    import plotly.graph_objects as go
+    import numpy as np
+
+    df = ts_df.copy()
+    df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+
+    # Build value cols if needed
+    if "btc_value" not in df.columns and {"btc_holdings", "btc_price_usd"}.issubset(df.columns):
+        df["btc_value"] = df["btc_holdings"] * df["btc_price_usd"]
+    if "eth_value" not in df.columns and {"eth_holdings", "eth_price_usd"}.issubset(df.columns):
+        df["eth_value"] = df["eth_holdings"] * df["eth_price_usd"]
+
+    # Coerce numerics (bad strings -> NaN)
+    for c in ["btc_value", "eth_value", "btc_price_usd", "eth_price_usd"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # Aggregate per day (values sum; prices use max of available rows)
+    value_cols = [c for c in ["btc_value", "eth_value"] if c in df.columns]
+    price_cols = [c for c in ["btc_price_usd",
+                              "eth_price_usd"] if c in df.columns]
+
+    daily_vals = df.groupby("date", as_index=False)[value_cols].sum(
+        min_count=1) if value_cols else df[["date"]].drop_duplicates()
+    if price_cols:
+        daily_px = df.groupby("date", as_index=False)[price_cols].max()
+        daily = daily_vals.merge(daily_px, on="date", how="left")
+    else:
+        daily = daily_vals
+    daily = daily.sort_values("date")
+
+    fig = go.Figure()
+
+    # Stacked areas (first to zero, second stacks to next)
+    if "btc_value" in daily.columns:
+        fig.add_trace(go.Scatter(
+            x=daily["date"], y=daily["btc_value"],
+            name="BTC Holdings (USD)",
+            mode="lines",
+            line=dict(width=0, shape="spline"),
+            stackgroup="one",
+            fill="tozeroy",
+            hoveron="points+fills",
+            hovertemplate="<b>%{x|%b %Y}</b><br>BTC Holdings: $%{y:,.0f}<extra></extra>",
+        ))
+    if "eth_value" in daily.columns:
+        fig.add_trace(go.Scatter(
+            x=daily["date"], y=daily["eth_value"],
+            name="ETH Holdings (USD)",
+            mode="lines",
+            line=dict(width=0, shape="spline"),
+            stackgroup="one",
+            fill="tonexty",
+            hoveron="points+fills",
+            hovertemplate="<b>%{x|%b %Y}</b><br>ETH Holdings: $%{y:,.0f}<extra></extra>",
+        ))
+
+    # Price lines on right axis (hover muted)
+    if "btc_price_usd" in daily.columns:
+        fig.add_trace(go.Scatter(
+            x=daily["date"], y=daily["btc_price_usd"],
+            name="BTC Price",
+            mode="lines",                     # ← enables hover dot on nearest point
+            line=dict(width=2),
+            yaxis="y2",
+            hovertemplate="<b>%{x|%b %Y}</b><br>BTC: $%{y:,.0f}<extra></extra>",
+        ))
+
+    if "eth_price_usd" in daily.columns:
+        fig.add_trace(go.Scatter(
+            x=daily["date"], y=daily["eth_price_usd"],
+            name="ETH Price",
+            mode="lines",                     # ← same here
+            line=dict(width=2, dash="dot"),
+            yaxis="y2",
+            hovertemplate="<b>%{x|%b %Y}</b><br>ETH: $%{y:,.0f}<extra></extra>",
+        ))
+
+    # Layout
+    fig.update_layout(
+        height=620,
+        margin=dict(t=30, b=10, l=10, r=10),
+        hovermode="closest",  # only the trace under cursor shows a tooltip
+        legend=dict(orientation="h", x=0.5, xanchor="center",
+                    y=-0.18, yanchor="top", title=""),
+        yaxis2=dict(
+            title="BTC / ETH Price (USD)",
+            overlaying="y",
+            side="right",
+            tickprefix="$",
+            separatethousands=True,
+            rangemode="tozero",
+            showgrid=False,
+            zeroline=False,
+        ),
+    )
+    fig.update_xaxes(showspikes=False)
+    fig.update_yaxes(
+        title="Holdings Value (USD)",
+        tickprefix="$",
+        separatethousands=True,
+        rangemode="tozero",
+        showgrid=True,
+        gridcolor="rgba(255,255,255,0.08)",
+        zeroline=False,
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+    return fig
+
+
+def render_holdings_by_company_stacked(ts_df: pd.DataFrame, max_companies: int = 5):
+    """
+    Stacked total USD holdings by company over time with optional BTC/ETH price lines.
+    Hover: single rich card for the company you're directly over (date + value + Total + BTC/ETH prices).
+    """
+    import pandas as pd
+    import numpy as np
+    import plotly.graph_objects as go
+
+    name_col = "Ticker" if "Ticker" in ts_df.columns else (
+        "Company" if "Company" in ts_df.columns else None)
+    if name_col is None:
+        raise ValueError("Expected a 'Ticker' or 'Company' column.")
+
+    df = ts_df.copy()
+    df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+
+    # Ensure per-coin USD values (used for daily totals in tooltip)
+    if "btc_value" not in df.columns and {"btc_holdings", "btc_price_usd"}.issubset(df.columns):
+        df["btc_value"] = df["btc_holdings"] * df["btc_price_usd"]
+    if "eth_value" not in df.columns and {"eth_holdings", "eth_price_usd"}.issubset(df.columns):
+        df["eth_value"] = df["eth_holdings"] * df["eth_price_usd"]
+
+    # Ensure total_value for stacking
+    if "total_value" not in df.columns:
+        need = {"btc_holdings", "eth_holdings",
+                "btc_price_usd", "eth_price_usd"}
+        if not need.issubset(df.columns):
+            raise ValueError("Missing columns to compute total_value.")
+        df["total_value"] = df["btc_holdings"] * df["btc_price_usd"] + \
+            df["eth_holdings"] * df["eth_price_usd"]
+
+    # Clean numerics
+    for c in ["total_value", "btc_price_usd", "eth_price_usd", "btc_value", "eth_value"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # Pick top-N companies by latest date
+    latest = df["date"].max()
+    keep = (df[df["date"] == latest]
+            .groupby(name_col, as_index=False)["total_value"].sum()
+            .sort_values("total_value", ascending=False)[name_col]
+            .head(max_companies)
+            .tolist())
+    df_top = df[df[name_col].isin(keep)]
+
+    # Aggregate each company per day (stack input)
+    agg = (df_top.groupby(["date", name_col], as_index=False)["total_value"]
+                 .sum(min_count=1)
+                 .sort_values(["date", name_col]))
+
+    # Per-day BTC/ETH prices (for hover context)
+    px = (df.groupby("date", as_index=False)[["btc_price_usd", "eth_price_usd"]]
+            .max()
+            .sort_values("date"))
+
+    # Per-day TOTAL across selected companies (for hover context)
+    day_total = (agg.groupby("date", as_index=False)["total_value"]
+                    .sum(min_count=1)
+                    .rename(columns={"total_value": "__total__"}))
+
+    # Maps for hover enrichment
+    BTC_PX = dict(zip(px["date"], px["btc_price_usd"]))
+    ETH_PX = dict(zip(px["date"], px["eth_price_usd"]))
+    TOTAL_MAP = dict(zip(day_total["date"], day_total["__total__"]))
+
+    fig = go.Figure()
+
+    # ---- stacked fills (visual only; we'll capture hover with invisible markers) ----
+    for i, (key, g) in enumerate(agg.groupby(name_col, sort=False)):
+        g = g.sort_values("date")
+        fig.add_trace(go.Scatter(
+            x=g["date"], y=g["total_value"],
+            name=str(key),
+            mode="lines",
+            line=dict(width=0, shape="spline"),
+            stackgroup="one",
+            fill=("tozeroy" if i == 0 else "tonexty"),
+            hoverinfo="skip",  # keep fills silent; hover will come from the markers below
+            showlegend=True,
+            opacity=0.9,
+        ))
+
+    # ---- invisible hover-capture markers (one per company band per date) ----
+    # Build wide table with SAME column order as the stacked loop above
+    order = [name for name, _ in agg.groupby(name_col, sort=False)]
+    wide = (agg.pivot(index="date", columns=name_col, values="total_value")
+               .reindex(columns=order)
+               .fillna(0))
+    cum_top = wide.cumsum(axis=1)                 # top edge of each band
+    cum_bottom = cum_top.shift(axis=1).fillna(0)  # bottom edge
+    # vertical midpoint (hover target)
+    mid = cum_bottom + (wide * 0.5)
+
+    for comp in order:
+        y_mid = mid[comp]
+        vals = wide[comp]
+        dates = y_mid.index
+
+        # per-day customdata: [company_value, total_selected, btc_price, eth_price]
+        custom = np.column_stack([
+            vals.values,
+            pd.Series(dates).map(TOTAL_MAP).to_numpy(),
+            pd.Series(dates).map(BTC_PX).to_numpy(),
+            pd.Series(dates).map(ETH_PX).to_numpy(),
+        ])
+
+        fig.add_trace(go.Scatter(
+            x=dates, y=y_mid.values,
+            name=f"{comp}",          # keep same name for clarity in hover
+            showlegend=False,        # don't duplicate in legend
+            mode="markers",
+            marker=dict(size=22, opacity=0.01),  # invisible but hoverable
+            hovertemplate=(
+                "<b>%{x|%b %Y}</b>"
+                f"<br>{comp}: $%{{customdata[0]:,.0f}}"
+                "<br><span style='opacity:.75'>"
+                "Total (selected): $%{customdata[1]:,.0f}<br>"
+                "BTC Price: $%{customdata[2]:,.0f} • ETH Price: $%{customdata[3]:,.0f}"
+                "</span><extra></extra>"
+            ),
+            customdata=custom,
+        ))
+
+    # ---- optional price lines on right axis (kept silent so only company card shows) ----
+    fig.add_trace(go.Scatter(
+        x=px["date"], y=px["btc_price_usd"],
+        name="BTC Price",
+        mode="lines",                     # ← enables hover dot
+        line=dict(width=2, shape="spline"),
+        yaxis="y2",
+        hovertemplate="<b>%{x|%b %Y}</b><br>BTC: $%{y:,.0f}<extra></extra>",
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=px["date"], y=px["eth_price_usd"],
+        name="ETH Price",
+        mode="lines",                     # ← enables hover dot
+        line=dict(width=2, dash="dot", shape="spline"),
+        yaxis="y2",
+        hovertemplate="<b>%{x|%b %Y}</b><br>ETH: $%{y:,.0f}<extra></extra>",
+    ))
+
+    # ---- layout: single-card hover on the hovered object only ----
+    fig.update_layout(
+        height=620,
+        margin=dict(t=30, b=10, l=10, r=10),
+        hovermode="closest",          # ONE card only: the hovered band
+        hoverdistance=12,             # tighten precision (pixels)
+        legend=dict(orientation="h", x=0.5, xanchor="center",
+                    y=-0.18, yanchor="top", title=""),
+        yaxis2=dict(
+            title="BTC / ETH Price (USD)",
+            overlaying="y",
+            side="right",
+            tickprefix="$",
+            separatethousands=True,
+            rangemode="tozero",
+            showgrid=False,
+            zeroline=False,
+        ),
+    )
+    fig.update_xaxes(showspikes=False)
+    fig.update_yaxes(
+        title="Holdings Value (USD)",
+        tickprefix="$",
+        separatethousands=True,
+        rangemode="tozero",
+        showgrid=True,
+        gridcolor="rgba(255,255,255,0.08)",
+        zeroline=False,
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+    return fig
 
 
 def _format_number_no_currency(n: float) -> str:
@@ -887,7 +1285,7 @@ elif analysis_key == "market_vs_treasury":
 elif analysis_key == "valuation":
     st.subheader("Liabilities vs Net Crypto NAV")
     st.caption("Compare total liabilities against net crypto NAV across companies")
-    # Two‑column layout: chart and selector (match width of Market Cap vs Treasury chart)
+    # Two-column layout: chart and selector (match width of Market Cap vs Treasury chart)
     graph_col, select_col = st.columns([6, 1])
     with select_col:
         selected_tickers = render_company_selector(df_view)
@@ -910,7 +1308,7 @@ elif analysis_key == "valuation":
         axis=1,
     )
 
-    # Determine the maximum liabilities/NAV ratio for scaling the secondary y‑axis and Altair line
+    # Determine the maximum liabilities/NAV ratio for scaling the secondary y-axis and Altair line
     max_ratio = (
         liab_nav_df_sorted["LiabPctNAV"].max()
         if not liab_nav_df_sorted["LiabPctNAV"].empty
@@ -978,16 +1376,25 @@ elif analysis_key == "valuation":
                 yaxis="y2",
             )
         )
+        # ⬇️ Move legend out of the way (horizontal below chart) and give a little bottom margin
         fig_ln.update_layout(
-            legend=dict(orientation="v", y=1, x=1.02),
+            legend=dict(
+                orientation="h",
+                yanchor="top",
+                y=-0.2,
+                xanchor="center",
+                x=0.5,
+                title_text=""
+            ),
             yaxis2=dict(
                 overlaying="y",
                 side="right",
                 title="Liabilities / NAV (%)",
                 tickformat=".0%",
-                # Force the secondary axis to start at 0 so zero ratios sit on the baseline
                 range=[0, max_ratio if max_ratio > 0 else 1],
             ),
+            height=620,
+            margin=dict(t=10, b=90, l=10, r=20),
         )
         graph_col.plotly_chart(fig_ln, use_container_width=True)
     else:
@@ -1011,7 +1418,6 @@ elif analysis_key == "valuation":
                 y=alt.Y(
                     "LiabPctNAV:Q",
                     axis=alt.Axis(title="Liabilities / NAV (%)", format=".0%"),
-                    # Set domain so ratios start at 0; default upper bound to 1 if no data
                     scale=alt.Scale(
                         domain=[0, max_ratio if max_ratio > 0 else 1], nice=False),
                 ),
@@ -1020,10 +1426,47 @@ elif analysis_key == "valuation":
         ln_chart = (
             alt.layer(bars, line)
             .resolve_scale(y='independent')
-            # match the Market Cap vs Treasury chart height
             .properties(height=620)
         )
         graph_col.altair_chart(ln_chart, use_container_width=True)
+
+    render_live_prices(prices, pct_change)
+    st.stop()
+
+elif analysis_key == "time_series":
+    st.subheader("Holdings vs Price (Time Series)")
+    st.caption("Stacked BTC/ETH holdings value in USD with BTC & ETH price lines.")
+
+    ts_df = load_treasury_timeseries()
+    if ts_df.empty:
+        render_live_prices(prices, pct_change)
+        st.stop()
+
+    # Two-column layout: chart + selector (match your other pages)
+    graph_col, select_col = st.columns([6, 1])
+    with select_col:
+        # Reuse your existing checkbox selector; it expects a DataFrame with "Ticker"
+        selector_df = ts_df if "Ticker" in ts_df.columns else df_view  # fallback
+        selected_tickers = render_company_selector(selector_df)
+        view = st.radio(
+            "View", ["Aggregate", "By company (top 5)"], horizontal=False, key="ts_view")
+        max_n = 5
+        if view != "Aggregate":
+            max_n = st.slider(
+                "Top N", 3, 10, 5, help="Max companies stacked by latest total value")
+
+    # Apply company filter if we have tickers
+    ts_filtered = ts_df.copy()
+    if "Ticker" in ts_filtered.columns and selected_tickers:
+        ts_filtered = ts_filtered[ts_filtered["Ticker"].isin(selected_tickers)]
+
+    with graph_col:
+        if view == "Aggregate":
+            # reuse your aggregate renderer
+            render_holdings_vs_prices(ts_filtered)
+        else:
+            render_holdings_by_company_stacked(
+                ts_filtered, max_companies=max_n)
 
     render_live_prices(prices, pct_change)
     st.stop()
@@ -1059,7 +1502,7 @@ elif analysis_key == "table":
             lambda x: f"{x:.2f}x" if pd.notnull(x) else "–"
         )
 
-    table_col.dataframe(df_display, use_container_width=True)
+        table_col.dataframe(df_display, use_container_width=True)
     render_live_prices(prices, pct_change)
     st.stop()
 
@@ -1135,27 +1578,3 @@ elif analysis_key == "table":
                 st.altair_chart(ln_chart, use_container_width=True)
         else:
             st.info("No data for liabilities vs Net Crypto NAV chart.")
-
-with tab_table:
-    st.subheader("Company Screener Table")
-    # Format the display DataFrame with abbreviated numbers
-    df_display = df_view.copy()
-    for col in ["Mkt Cap (USD)", "Treasury USD", "Total Liabilities", "Net Crypto NAV"]:
-        if col in df_display.columns:
-            df_display[col] = df_display[col].apply(fmt_abbrev)
-    if "NAV per share" in df_display.columns:
-        df_display["NAV per share"] = df_display["NAV per share"].apply(
-            lambda x: f"${x:,.2f}" if pd.notnull(x) else "–")
-    if "Share price USD" in df_display.columns:
-        df_display["Share price USD"] = df_display["Share price USD"].apply(
-            lambda x: f"${x:,.2f}" if pd.notnull(x) else "–")
-    if "% of Mkt Cap" in df_display.columns:
-        df_display["% of Mkt Cap"] = df_display["% of Mkt Cap"].apply(
-            lambda x: f"{x:.2f}%")
-    if "MNAV (x)" in df_display.columns:
-        df_display["MNAV (x)"] = df_display["MNAV (x)"].apply(
-            lambda x: f"{x:.2f}x" if pd.notnull(x) else "–")
-    st.dataframe(df_display, use_container_width=True)
-
-# -------------------- Table (formatted) -------------------------
-# Data table is rendered within the "Table" tab; see tab_table definition above.
