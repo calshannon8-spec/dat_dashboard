@@ -47,7 +47,7 @@ st.markdown(
     ### Digital Asset Treasury Dashboard
 
     This dashboard provides insights into publicly listed companies that hold digital assets.
-    Use the selector below to explore treasury composition, market capitalization versus crypto treasury, valuation & MNAV, and to view a full screener table.
+    Use the selector below to explore treasury composition, market capitalization versus crypto treasury, Liabilites vs Net Crypto NAV, Liabilites vs Net Crypto, Holding vs price over time, and a full screener table.
 
     **Glossary:**
     - **Net Crypto NAV**: Treasury USD minus total liabilities.
@@ -66,7 +66,7 @@ analysis_options = {
     "Overview": "overview",
     "Treasury Composition": "treasury",
     "Market Cap vs Treasury": "market_vs_treasury",
-    "Valuation & MNAV": "valuation",
+    "Liabilities vs Net Crypto NAV": "valuation",
     "Holdings vs Price (Time Series)": "time_series",   # <- ADD THIS
     "Table": "table",
 }
@@ -429,27 +429,35 @@ def load_treasury_timeseries() -> pd.DataFrame:
 
 def render_holdings_vs_prices(ts_df: pd.DataFrame):
     """
-    Stacked USD value of BTC + ETH over time with BTC/ETH price lines.
-    Hover: only on filled areas, shows date + $ value. Price lines are silent.
+    Aggregate view: stacked BTC+ETH USD value over time with BTC/ETH price lines.
+    Hover anywhere on a date shows ONE unified card containing:
+      • BTC Holdings (USD)
+      • ETH Holdings (USD)
+      • Total Holdings (BTC+ETH)
+      • BTC Price (USD)
+      • ETH Price (USD)
     """
     import plotly.graph_objects as go
     import numpy as np
+    import pandas as pd
 
     df = ts_df.copy()
     df["date"] = pd.to_datetime(df["date"]).dt.normalize()
 
-    # Build value cols if needed
+    # Build USD value columns if not present
     if "btc_value" not in df.columns and {"btc_holdings", "btc_price_usd"}.issubset(df.columns):
-        df["btc_value"] = df["btc_holdings"] * df["btc_price_usd"]
+        df["btc_value"] = pd.to_numeric(
+            df["btc_holdings"], errors="coerce") * pd.to_numeric(df["btc_price_usd"], errors="coerce")
     if "eth_value" not in df.columns and {"eth_holdings", "eth_price_usd"}.issubset(df.columns):
-        df["eth_value"] = df["eth_holdings"] * df["eth_price_usd"]
+        df["eth_value"] = pd.to_numeric(
+            df["eth_holdings"], errors="coerce") * pd.to_numeric(df["eth_price_usd"], errors="coerce")
 
-    # Coerce numerics (bad strings -> NaN)
+    # Coerce numerics
     for c in ["btc_value", "eth_value", "btc_price_usd", "eth_price_usd"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # Aggregate per day (values sum; prices use max of available rows)
+    # Aggregate per day
     value_cols = [c for c in ["btc_value", "eth_value"] if c in df.columns]
     price_cols = [c for c in ["btc_price_usd",
                               "eth_price_usd"] if c in df.columns]
@@ -463,95 +471,108 @@ def render_holdings_vs_prices(ts_df: pd.DataFrame):
         daily = daily_vals
     daily = daily.sort_values("date")
 
+    # Totals and helpers
+    daily["total_value"] = (daily.get("btc_value", 0).fillna(
+        0)) + (daily.get("eth_value", 0).fillna(0))
+    # We’ll use unified hover, so each trace contributes 1 row in the card.
     fig = go.Figure()
 
-    # Stacked areas (first to zero, second stacks to next)
+    # Stacked BTC/ETH bands (each shows its own row in the unified hover)
     if "btc_value" in daily.columns:
         fig.add_trace(go.Scatter(
             x=daily["date"], y=daily["btc_value"],
             name="BTC Holdings (USD)",
-            mode="lines",
-            line=dict(width=0, shape="spline"),
-            stackgroup="one",
-            fill="tozeroy",
-            hoveron="points+fills",
-            hovertemplate="<b>%{x|%b %Y}</b><br>BTC Holdings: $%{y:,.0f}<extra></extra>",
+            mode="lines", line=dict(width=0, shape="spline"),
+            stackgroup="one", fill="tozeroy",
+            hovertemplate="BTC Holdings: $%{y:,.0f}<extra></extra>",
         ))
     if "eth_value" in daily.columns:
         fig.add_trace(go.Scatter(
             x=daily["date"], y=daily["eth_value"],
             name="ETH Holdings (USD)",
-            mode="lines",
-            line=dict(width=0, shape="spline"),
-            stackgroup="one",
-            fill="tonexty",
-            hoveron="points+fills",
-            hovertemplate="<b>%{x|%b %Y}</b><br>ETH Holdings: $%{y:,.0f}<extra></extra>",
+            mode="lines", line=dict(width=0, shape="spline"),
+            stackgroup="one", fill="tonexty",
+            hovertemplate="ETH Holdings: $%{y:,.0f}<extra></extra>",
         ))
 
-    # Price lines on right axis (hover muted)
+    # One invisible line for TOTAL so the card shows the combined amount once
+    fig.add_trace(go.Scatter(
+        x=daily["date"], y=daily["total_value"],
+        name="Total (BTC+ETH)",
+        mode="lines", line=dict(width=0),
+        showlegend=False,
+        hovertemplate="Total Holdings: $%{y:,.0f}<extra></extra>",
+    ))
+
+    # Price lines on the right axis → their own rows in the same unified card
     if "btc_price_usd" in daily.columns:
         fig.add_trace(go.Scatter(
             x=daily["date"], y=daily["btc_price_usd"],
             name="BTC Price",
-            mode="lines",                     # ← enables hover dot on nearest point
-            line=dict(width=2),
+            mode="lines", line=dict(width=2),
             yaxis="y2",
-            hovertemplate="<b>%{x|%b %Y}</b><br>BTC: $%{y:,.0f}<extra></extra>",
+            hovertemplate="BTC Price: $%{y:,.0f}<extra></extra>",
         ))
-
     if "eth_price_usd" in daily.columns:
         fig.add_trace(go.Scatter(
             x=daily["date"], y=daily["eth_price_usd"],
             name="ETH Price",
-            mode="lines",                     # ← same here
-            line=dict(width=2, dash="dot"),
+            mode="lines", line=dict(width=2, dash="dot"),
             yaxis="y2",
-            hovertemplate="<b>%{x|%b %Y}</b><br>ETH: $%{y:,.0f}<extra></extra>",
+            hovertemplate="ETH Price: $%{y:,.0f}<extra></extra>",
         ))
 
-    # Layout
+    # Layout: unified hover = one clean card anywhere along x
     fig.update_layout(
         height=620,
         margin=dict(t=30, b=10, l=10, r=10),
-        hovermode="closest",  # only the trace under cursor shows a tooltip
+        hovermode="x unified",
+        hoverlabel=dict(namelength=-1, align="left"),
         legend=dict(orientation="h", x=0.5, xanchor="center",
                     y=-0.18, yanchor="top", title=""),
         yaxis2=dict(
             title="BTC / ETH Price (USD)",
-            overlaying="y",
-            side="right",
-            tickprefix="$",
-            separatethousands=True,
-            rangemode="tozero",
-            showgrid=False,
-            zeroline=False,
+            overlaying="y", side="right",
+            tickprefix="$", separatethousands=True,
+            rangemode="tozero", showgrid=False, zeroline=False,
         ),
     )
-    fig.update_xaxes(showspikes=False)
+    fig.update_xaxes(showspikes=True, spikemode="across",
+                     spikesnap="cursor", spikedash="dot", spikethickness=1)
     fig.update_yaxes(
         title="Holdings Value (USD)",
-        tickprefix="$",
-        separatethousands=True,
+        tickprefix="$", separatethousands=True,
         rangemode="tozero",
-        showgrid=True,
-        gridcolor="rgba(255,255,255,0.08)",
-        zeroline=False,
+        showgrid=True, gridcolor="rgba(255,255,255,0.08)", zeroline=False,
     )
 
     st.plotly_chart(fig, use_container_width=True)
     return fig
 
 
-def render_holdings_by_company_stacked(ts_df: pd.DataFrame, max_companies: int = 5):
+def render_holdings_by_company_stacked(
+    ts_df: pd.DataFrame,
+    max_companies: int = 5,
+    show_boundaries: bool = True,
+    show_end_labels: bool = True
+):
     """
-    Stacked total USD holdings by company over time with optional BTC/ETH price lines.
-    Hover: single rich card for the company you're directly over (date + value + Total + BTC/ETH prices).
+    Stacked total USD holdings by company over time with BTC/ETH price lines.
+
+    Reliable UX:
+      • Hover anywhere -> a single unified hover card for that date
+      • Card rows: each visible company, TOTAL (selected), BTC price, ETH price
+      • Stable colors per ticker; legend toggling doesn't reshuffle colors
+      • Optional band boundary lines + right-edge end labels
     """
     import pandas as pd
     import numpy as np
     import plotly.graph_objects as go
+    import plotly.express as px
+    from plotly.colors import hex_to_rgb
+    import streamlit as st
 
+    # --- identify company column
     name_col = "Ticker" if "Ticker" in ts_df.columns else (
         "Company" if "Company" in ts_df.columns else None)
     if name_col is None:
@@ -560,13 +581,11 @@ def render_holdings_by_company_stacked(ts_df: pd.DataFrame, max_companies: int =
     df = ts_df.copy()
     df["date"] = pd.to_datetime(df["date"]).dt.normalize()
 
-    # Ensure per-coin USD values (used for daily totals in tooltip)
-    if "btc_value" not in df.columns and {"btc_holdings", "btc_price_usd"}.issubset(df.columns):
-        df["btc_value"] = df["btc_holdings"] * df["btc_price_usd"]
-    if "eth_value" not in df.columns and {"eth_holdings", "eth_price_usd"}.issubset(df.columns):
-        df["eth_value"] = df["eth_holdings"] * df["eth_price_usd"]
+    # --- ensure numeric columns
+    for c in ["btc_holdings", "eth_holdings", "btc_price_usd", "eth_price_usd"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
 
-    # Ensure total_value for stacking
     if "total_value" not in df.columns:
         need = {"btc_holdings", "eth_holdings",
                 "btc_price_usd", "eth_price_usd"}
@@ -575,146 +594,126 @@ def render_holdings_by_company_stacked(ts_df: pd.DataFrame, max_companies: int =
         df["total_value"] = df["btc_holdings"] * df["btc_price_usd"] + \
             df["eth_holdings"] * df["eth_price_usd"]
 
-    # Clean numerics
-    for c in ["total_value", "btc_price_usd", "eth_price_usd", "btc_value", "eth_value"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
-
-    # Pick top-N companies by latest date
+    # --- pick Top-N tickers by latest date
     latest = df["date"].max()
-    keep = (df[df["date"] == latest]
-            .groupby(name_col, as_index=False)["total_value"].sum()
-            .sort_values("total_value", ascending=False)[name_col]
-            .head(max_companies)
-            .tolist())
+    keep = (
+        df[df["date"] == latest]
+        .groupby(name_col, as_index=False)["total_value"].sum()
+        .sort_values("total_value", ascending=False)[name_col]
+        .head(max_companies)
+        .tolist()
+    )
     df_top = df[df[name_col].isin(keep)]
 
-    # Aggregate each company per day (stack input)
-    agg = (df_top.groupby(["date", name_col], as_index=False)["total_value"]
-                 .sum(min_count=1)
-                 .sort_values(["date", name_col]))
+    # --- aggregates
+    agg = (
+        df_top.groupby(["date", name_col], as_index=False)["total_value"]
+        .sum(min_count=1)
+        .sort_values(["date", name_col])
+    )
+    prices = (
+        df.groupby("date", as_index=False)[["btc_price_usd", "eth_price_usd"]]
+        .max()
+        .sort_values("date")
+    )
+    day_total = (
+        agg.groupby("date", as_index=False)["total_value"]
+        .sum(min_count=1)
+        .rename(columns={"total_value": "__total__"})
+    )
 
-    # Per-day BTC/ETH prices (for hover context)
-    px = (df.groupby("date", as_index=False)[["btc_price_usd", "eth_price_usd"]]
-            .max()
-            .sort_values("date"))
+    # --- stable color map per ticker
+    palette = px.colors.qualitative.Plotly
+    tickers = sorted(agg[name_col].unique().tolist())
+    color_map = {t: palette[i % len(palette)] for i, t in enumerate(tickers)}
 
-    # Per-day TOTAL across selected companies (for hover context)
-    day_total = (agg.groupby("date", as_index=False)["total_value"]
-                    .sum(min_count=1)
-                    .rename(columns={"total_value": "__total__"}))
+    def rgba(hex_color: str, a: float) -> str:
+        r, g, b = hex_to_rgb(hex_color)
+        return f"rgba({r},{g},{b},{a})"
 
-    # Maps for hover enrichment
-    BTC_PX = dict(zip(px["date"], px["btc_price_usd"]))
-    ETH_PX = dict(zip(px["date"], px["eth_price_usd"]))
-    TOTAL_MAP = dict(zip(day_total["date"], day_total["__total__"]))
-
+    # --------------- figure ---------------
     fig = go.Figure()
 
-    # ---- stacked fills (visual only; we'll capture hover with invisible markers) ----
+    # stacked bands (fills carry the color; hover is unified so no overlays needed)
+    order = [n for n, _ in agg.groupby(name_col, sort=False)]
     for i, (key, g) in enumerate(agg.groupby(name_col, sort=False)):
         g = g.sort_values("date")
+        c_hex = color_map[str(key)]
         fig.add_trace(go.Scatter(
             x=g["date"], y=g["total_value"],
             name=str(key),
+            legendgroup=str(key),
             mode="lines",
-            line=dict(width=0, shape="spline"),
+            line=dict(width=0, color=c_hex, shape="spline"),
             stackgroup="one",
             fill=("tozeroy" if i == 0 else "tonexty"),
-            hoverinfo="skip",  # keep fills silent; hover will come from the markers below
-            showlegend=True,
-            opacity=0.9,
+            fillcolor=rgba(c_hex, 0.80),
+            # In unified hover, each trace contributes one row.
+            hovertemplate="%{fullData.name}: $%{y:,.0f}<extra></extra>",
         ))
 
-    # ---- invisible hover-capture markers (one per company band per date) ----
-    # Build wide table with SAME column order as the stacked loop above
-    order = [name for name, _ in agg.groupby(name_col, sort=False)]
-    wide = (agg.pivot(index="date", columns=name_col, values="total_value")
-               .reindex(columns=order)
-               .fillna(0))
-    cum_top = wide.cumsum(axis=1)                 # top edge of each band
-    cum_bottom = cum_top.shift(axis=1).fillna(0)  # bottom edge
-    # vertical midpoint (hover target)
-    mid = cum_bottom + (wide * 0.5)
+    # optional: boundary lines for visual separation
+    if show_boundaries:
+        wide_b = agg.pivot(index="date", columns=name_col,
+                           values="total_value").reindex(columns=order).fillna(0)
+        cum_top_b = wide_b.cumsum(axis=1)
+        for comp in order:
+            fig.add_trace(go.Scatter(
+                x=wide_b.index, y=cum_top_b[comp].values,
+                mode="lines",
+                line=dict(width=1, color="rgba(255,255,255,0.28)"),
+                hoverinfo="skip", showlegend=False
+            ))
 
-    for comp in order:
-        y_mid = mid[comp]
-        vals = wide[comp]
-        dates = y_mid.index
-
-        # per-day customdata: [company_value, total_selected, btc_price, eth_price]
-        custom = np.column_stack([
-            vals.values,
-            pd.Series(dates).map(TOTAL_MAP).to_numpy(),
-            pd.Series(dates).map(BTC_PX).to_numpy(),
-            pd.Series(dates).map(ETH_PX).to_numpy(),
-        ])
-
-        fig.add_trace(go.Scatter(
-            x=dates, y=y_mid.values,
-            name=f"{comp}",          # keep same name for clarity in hover
-            showlegend=False,        # don't duplicate in legend
-            mode="markers",
-            marker=dict(size=22, opacity=0.01),  # invisible but hoverable
-            hovertemplate=(
-                "<b>%{x|%b %Y}</b>"
-                f"<br>{comp}: $%{{customdata[0]:,.0f}}"
-                "<br><span style='opacity:.75'>"
-                "Total (selected): $%{customdata[1]:,.0f}<br>"
-                "BTC Price: $%{customdata[2]:,.0f} • ETH Price: $%{customdata[3]:,.0f}"
-                "</span><extra></extra>"
-            ),
-            customdata=custom,
-        ))
-
-    # ---- optional price lines on right axis (kept silent so only company card shows) ----
+    # TOTAL (selected) as its own invisible line -> single row in unified hover
     fig.add_trace(go.Scatter(
-        x=px["date"], y=px["btc_price_usd"],
+        x=day_total["date"], y=day_total["__total__"],
+        name="Total (selected)",
+        mode="lines",
+        line=dict(width=0),
+        showlegend=False,
+        hovertemplate="Total (selected): $%{y:,.0f}<extra></extra>",
+    ))
+
+    # price lines (right axis) — also show up in unified card
+    fig.add_trace(go.Scatter(
+        x=prices["date"], y=prices["btc_price_usd"],
         name="BTC Price",
-        mode="lines",                     # ← enables hover dot
-        line=dict(width=2, shape="spline"),
+        mode="lines",
+        line=dict(width=2, color="#00B5F7", shape="spline"),
         yaxis="y2",
-        hovertemplate="<b>%{x|%b %Y}</b><br>BTC: $%{y:,.0f}<extra></extra>",
+        hovertemplate="BTC Price: $%{y:,.0f}<extra></extra>",
+        legendgroup="__prices__",
     ))
-
     fig.add_trace(go.Scatter(
-        x=px["date"], y=px["eth_price_usd"],
+        x=prices["date"], y=prices["eth_price_usd"],
         name="ETH Price",
-        mode="lines",                     # ← enables hover dot
-        line=dict(width=2, dash="dot", shape="spline"),
+        mode="lines",
+        line=dict(width=2, dash="dot", color="#F2C038", shape="spline"),
         yaxis="y2",
-        hovertemplate="<b>%{x|%b %Y}</b><br>ETH: $%{y:,.0f}<extra></extra>",
+        hovertemplate="ETH Price: $%{y:,.0f}<extra></extra>",
+        legendgroup="__prices__",
     ))
 
-    # ---- layout: single-card hover on the hovered object only ----
+    # layout
     fig.update_layout(
         height=620,
         margin=dict(t=30, b=10, l=10, r=10),
-        hovermode="closest",          # ONE card only: the hovered band
-        hoverdistance=12,             # tighten precision (pixels)
+        hovermode="x unified",                 # << key: unified hover anywhere on x
+        hoverlabel=dict(namelength=-1, align="left"),
         legend=dict(orientation="h", x=0.5, xanchor="center",
                     y=-0.18, yanchor="top", title=""),
         yaxis2=dict(
             title="BTC / ETH Price (USD)",
-            overlaying="y",
-            side="right",
-            tickprefix="$",
-            separatethousands=True,
-            rangemode="tozero",
-            showgrid=False,
-            zeroline=False,
+            overlaying="y", side="right",
+            tickprefix="$", separatethousands=True,
+            rangemode="tozero", showgrid=False, zeroline=False,
         ),
     )
-    fig.update_xaxes(showspikes=False)
-    fig.update_yaxes(
-        title="Holdings Value (USD)",
-        tickprefix="$",
-        separatethousands=True,
-        rangemode="tozero",
-        showgrid=True,
-        gridcolor="rgba(255,255,255,0.08)",
-        zeroline=False,
-    )
+    fig.update_xaxes(showspikes=True, spikemode="across",
+                     spikesnap="cursor", spikedash="dot", spikethickness=1)
+    fig.update_yaxes(title="Holdings Value (USD)", tickprefix="$", separatethousands=True,
+                     rangemode="tozero", showgrid=True, gridcolor="rgba(255,255,255,0.08)", zeroline=False)
 
     st.plotly_chart(fig, use_container_width=True)
     return fig
@@ -1462,11 +1461,11 @@ elif analysis_key == "time_series":
         selector_df = ts_df if "Ticker" in ts_df.columns else df_view  # fallback
         selected_tickers = render_company_selector(selector_df)
         view = st.radio(
-            "View", ["Aggregate", "By company (top 5)"], horizontal=False, key="ts_view")
+            "View", ["Aggregate", "By company"], horizontal=False, key="ts_view")
         max_n = 5
         if view != "Aggregate":
             max_n = st.slider(
-                "Top N", 3, 10, 5, help="Max companies stacked by latest total value")
+                "Top Names", 3, 10, 5, help="Max companies stacked by latest total value")
 
     # Apply company filter if we have tickers
     ts_filtered = ts_df.copy()
