@@ -1296,152 +1296,163 @@ elif analysis_key == "market_vs_treasury":
 
 elif analysis_key == "valuation":
     st.subheader("Liabilities vs Net Crypto NAV")
-    st.caption("Compare total liabilities against net crypto NAV across companies")
+    st.caption(
+        "Balance-style view: Net Crypto NAV (equity) + Liabilities = Gross crypto holdings.")
+
     # Two-column layout: chart and selector (match width of Market Cap vs Treasury chart)
     graph_col, select_col = st.columns([6, 1])
     with select_col:
         selected_tickers = render_company_selector(df_view)
 
+    # Filter rows by selection
     df_view_local = df_view[df_view["Ticker"].isin(
         selected_tickers)] if selected_tickers else df_view
-    liab_nav_df = df_view_local[[
-        "Ticker", "Total Liabilities", "Net Crypto NAV"]].dropna()
-    if liab_nav_df.empty:
-        graph_col.info("No data for liabilities vs Net Crypto NAV chart.")
+
+    # Required inputs
+    req_cols = ["Ticker", "Total Liabilities", "Net Crypto NAV"]
+    d = df_view_local[req_cols].dropna().copy()
+    if d.empty:
+        graph_col.info("No data for stacked balance view.")
         render_live_prices(prices, pct_change)
         st.stop()
 
-    # Sort companies by Net Crypto NAV and compute the liabilities/NAV ratio
-    liab_nav_df_sorted = liab_nav_df.sort_values(
-        "Net Crypto NAV", ascending=False).copy()
-    liab_nav_df_sorted["LiabPctNAV"] = liab_nav_df_sorted.apply(
-        lambda row: (row["Total Liabilities"] / row["Net Crypto NAV"])
-        if pd.notnull(row["Net Crypto NAV"]) and float(row["Net Crypto NAV"]) != 0 else 0.0,
-        axis=1,
-    )
+    # Coerce numerics and build components
+    d["Liabilities"] = pd.to_numeric(
+        d["Total Liabilities"], errors="coerce").fillna(0.0)
+    d["NAV"] = pd.to_numeric(d["Net Crypto NAV"], errors="coerce").fillna(0.0)
+    # since NAV = Gross − Liabilities
+    d["Gross Holdings"] = d["NAV"] + d["Liabilities"]
+    d["DebtRatio"] = np.where(d["Gross Holdings"] > 0,
+                              d["Liabilities"] / d["Gross Holdings"], np.nan)
 
-    # Determine the maximum liabilities/NAV ratio for scaling the secondary y-axis and Altair line
-    max_ratio = (
-        liab_nav_df_sorted["LiabPctNAV"].max()
-        if not liab_nav_df_sorted["LiabPctNAV"].empty
-        else 0.0
-    )
+    # Order tickers by gross (largest first)
+    d = d.sort_values("Gross Holdings", ascending=False).reset_index(drop=True)
+    ticker_order = d["Ticker"].tolist()
 
-    # Prepare a long-form dataframe for grouped bars
-    liab_nav_long = liab_nav_df_sorted.melt(
-        id_vars=["Ticker"],
-        value_vars=["Total Liabilities", "Net Crypto NAV"],
-        var_name="Metric",
-        value_name="Amount",
+    # Long form for stacked bars
+    stack_long = pd.melt(
+        d,
+        id_vars=["Ticker", "Gross Holdings", "DebtRatio"],
+        value_vars=["NAV", "Liabilities"],
+        var_name="Component",
+        value_name="USD",
     )
+    stack_long["Component"] = stack_long["Component"].map({
+        "NAV": "Net Crypto NAV (Equity)",
+        "Liabilities": "Liabilities",
+    })
 
     if HAS_PLOTLY:
-        liab_nav_long = liab_nav_long.copy()
-        liab_nav_long["Amount_B"] = liab_nav_long["Amount"] / 1e9
+        import plotly.express as px
+        import plotly.graph_objects as go
 
-        max_val_ln = liab_nav_long["Amount"].max(
-        ) if not liab_nav_long["Amount"].empty else 0
-        if max_val_ln and max_val_ln > 0:
-            tickvals_ln = np.linspace(0, max_val_ln, 5)
-            ticktext_ln = [f"{v/1e9:.2f}B" for v in tickvals_ln]
-        else:
-            tickvals_ln = [0]
-            ticktext_ln = ["0B"]
+        # Nice B-scale ticks
+        max_y = float(d["Gross Holdings"].max() or 0.0)
+        max_y = max_y if max_y > 0 else 1.0
+        tickvals = np.linspace(0, max_y, 5)
+        ticktext = [f"{v/1e9:.2f}B" for v in tickvals]
 
-        # Bar chart (no on-bar labels)
-        fig_ln = px.bar(
-            liab_nav_long,
+        fig = px.bar(
+            stack_long,
             x="Ticker",
-            y="Amount",
-            color="Metric",
-            barmode="group",
+            y="USD",
+            color="Component",
+            barmode="stack",
+            category_orders={"Ticker": ticker_order,
+                             "Component": ["Net Crypto NAV (Equity)", "Liabilities"]},
+            hover_data=None,
+            custom_data=["Gross Holdings"],  # to show total in hover
             title=None,
-            # used for hover formatting, not for text on bars
-            custom_data=["Amount_B"],
         )
-        fig_ln.update_yaxes(
+        fig.update_yaxes(
             title="Amount (B USD)",
-            type="linear",
             tickmode="array",
-            tickvals=tickvals_ln,
-            ticktext=ticktext_ln,
+            tickvals=tickvals,
+            ticktext=ticktext,
+            rangemode="tozero",
         )
-        fig_ln.update_traces(
+        fig.update_traces(
             hovertemplate=(
                 "<b>%{x}</b><br>"
                 "%{fullData.name}: $%{y:,.0f}<br>"
-                "Amount (B USD): %{customdata[0]:.2f}B"
+                "Gross (NAV + Liabilities): $%{customdata[0]:,.0f}"
                 "<extra></extra>"
             )
         )
 
-        # Overlay a line showing liabilities as a percentage of Net Crypto NAV (secondary axis)
-        import plotly.graph_objects as go
-
-        ratio_df = liab_nav_df_sorted[["Ticker", "LiabPctNAV"]]
-        fig_ln.add_trace(
+        # Right-axis line: Debt / Gross (%)
+        fig.add_trace(
             go.Scatter(
-                x=ratio_df["Ticker"],
-                y=ratio_df["LiabPctNAV"],
+                x=d["Ticker"],
+                y=d["DebtRatio"],
                 mode="lines+markers",
-                name="Liabilities / NAV (%)",
+                name="Debt / Gross (%)",
                 yaxis="y2",
             )
         )
-        # ⬇️ Move legend out of the way (horizontal below chart) and give a little bottom margin
-        fig_ln.update_layout(
+
+        # Layout
+        max_ratio = float(np.nanmax(d["DebtRatio"])) if np.isfinite(
+            d["DebtRatio"]).any() else 0.0
+        fig.update_layout(
             legend=dict(
-                orientation="h",
-                yanchor="top",
-                y=-0.2,
-                xanchor="center",
-                x=0.5,
-                title_text=""
+                orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5, title_text=""
             ),
             yaxis2=dict(
                 overlaying="y",
                 side="right",
-                title="Liabilities / NAV (%)",
+                title="Debt / Gross (%)",
                 tickformat=".0%",
-                range=[0, max_ratio if max_ratio > 0 else 1],
+                range=[0, max(1.0, max_ratio)] if np.isfinite(
+                    max_ratio) else [0, 1],
             ),
             height=620,
             margin=dict(t=10, b=90, l=10, r=20),
         )
-        graph_col.plotly_chart(fig_ln, use_container_width=True)
+        graph_col.plotly_chart(fig, use_container_width=True)
+
     else:
-        # Altair fallback: grouped bars with a line overlay on a fixed domain
+        import altair as alt
+
+        # Bars: stacked NAV + Liabilities
         bars = (
-            alt.Chart(liab_nav_long)
+            alt.Chart(stack_long)
             .mark_bar()
             .encode(
-                x="Ticker:N",
-                y=alt.Y("Amount:Q", title="Amount (USD)",
-                        scale=alt.Scale(type="linear")),
-                color="Metric:N",
-                tooltip=["Ticker", "Metric", "Amount"],
+                x=alt.X("Ticker:N", sort=ticker_order),
+                y=alt.Y("USD:Q", title="Amount (USD)", stack="zero"),
+                color=alt.Color("Component:N", title=""),
+                tooltip=[
+                    alt.Tooltip("Ticker:N"),
+                    alt.Tooltip("Component:N"),
+                    alt.Tooltip("USD:Q", title="Value (USD)", format=",.0f"),
+                    alt.Tooltip("Gross Holdings:Q",
+                                title="Gross (USD)", format=",.0f"),
+                ],
             )
         )
+
+        # Line: Debt / Gross (%) on independent right axis
         line = (
-            alt.Chart(liab_nav_df_sorted)
-            .mark_line(color='black')
+            alt.Chart(d)
+            .mark_line(point=True)
             .encode(
-                x="Ticker:N",
-                y=alt.Y(
-                    "LiabPctNAV:Q",
-                    axis=alt.Axis(title="Liabilities / NAV (%)", format=".0%"),
-                    scale=alt.Scale(
-                        domain=[0, max_ratio if max_ratio > 0 else 1], nice=False),
-                ),
+                x=alt.X("Ticker:N", sort=ticker_order),
+                y=alt.Y("DebtRatio:Q",
+                        axis=alt.Axis(title="Debt / Gross (%)", format=".0%"),
+                        scale=alt.Scale(domain=[0, float(np.nanmax(d["DebtRatio"])) if np.isfinite(d["DebtRatio"]).any() else 1])),
             )
+            .properties()
         )
-        ln_chart = (
+
+        chart = (
             alt.layer(bars, line)
             .resolve_scale(y='independent')
             .properties(height=620)
         )
-        graph_col.altair_chart(ln_chart, use_container_width=True)
+        graph_col.altair_chart(chart, use_container_width=True)
 
+    # Optional: keep live prices under this section
     render_live_prices(prices, pct_change)
     st.stop()
 
