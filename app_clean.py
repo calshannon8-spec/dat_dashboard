@@ -1554,8 +1554,8 @@ elif analysis_key == "time_series":
 
         # Range buttons
         window = st.radio(
-            "Range", ["1M", "6M", "1Y", "2Y", "All"],
-            horizontal=True, index=3, key="ts_range"  # default "2Y"
+            "Range", ["3M", "6M", "1Y", "All"],
+            horizontal=True, index=3, key="ts_range"
         )
 
         # Top-N slider (show for By company)
@@ -1578,15 +1578,13 @@ elif analysis_key == "time_series":
             ts_filtered["date"]).dt.normalize()
         end = ts_filtered["date"].max()
 
-        if window == "1M":
-            start = end - relativedelta(months=1)
+        if window == "3M":
+            start = end - relativedelta(months=3)
         elif window == "6M":
             start = end - relativedelta(months=6)
         elif window == "1Y":
             start = end - relativedelta(years=1)
-        elif window == "2Y":
-            start = end - relativedelta(years=2)
-        else:
+        else:  # "All"
             start = ts_filtered["date"].min()
 
         # clamp to dataset bounds
