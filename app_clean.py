@@ -12,6 +12,31 @@ import pandas as pd
 import numpy as np
 import requests
 import yfinance as yf
+from dateutil.relativedelta import relativedelta
+
+# --- number shortening for hover (K/M/B/T) ---
+
+
+def _short_dollar_array(values):
+    import numpy as np
+    out = []
+    for v in np.array(values, dtype=float):
+        av = abs(v)
+        if av >= 1e12:
+            s = f"{v/1e12:.1f}T"
+        elif av >= 1e9:
+            s = f"{v/1e9:.1f}B"
+        elif av >= 1e6:
+            s = f"{v/1e6:.1f}M"
+        elif av >= 1e3:
+            s = f"{v/1e3:.1f}K"
+        else:
+            s = f"{v:.0f}"
+        for suf in ("T", "B", "M", "K"):  # strip trailing .0
+            s = s.replace(f".0{suf}", suf)
+        out.append(s)
+    return out
+
 
 # Plotly optional; we’ll fall back to Altair if not installed
 try:
@@ -474,7 +499,8 @@ def render_holdings_vs_prices(ts_df: pd.DataFrame):
     # Totals and helpers
     daily["total_value"] = (daily.get("btc_value", 0).fillna(
         0)) + (daily.get("eth_value", 0).fillna(0))
-    # We’ll use unified hover, so each trace contributes 1 row in the card.
+
+    # Figure
     fig = go.Figure()
 
     # Stacked BTC/ETH bands (each shows its own row in the unified hover)
@@ -546,6 +572,17 @@ def render_holdings_vs_prices(ts_df: pd.DataFrame):
         showgrid=True, gridcolor="rgba(255,255,255,0.08)", zeroline=False,
     )
 
+    # --- abbreviate values in unified hover for non-price traces ---
+    for tr in fig.data:
+        # Skip price lines (they’re on y2 or named as prices)
+        if getattr(tr, "yaxis", "y") == "y2" or tr.name in ("BTC Price", "ETH Price"):
+            continue
+        if getattr(tr, "y", None) is not None:
+            tr.update(
+                customdata=_short_dollar_array(tr.y),
+                hovertemplate="%{fullData.name}: $%{customdata}<extra></extra>"
+            )
+
     st.plotly_chart(fig, use_container_width=True)
     return fig
 
@@ -571,6 +608,27 @@ def render_holdings_by_company_stacked(
     import plotly.express as px
     from plotly.colors import hex_to_rgb
     import streamlit as st
+
+    # --- helper: shorten numbers to K/M/B/T with one decimal, trim .0 ---
+    def _short_dollar_array(values):
+        out = []
+        arr = np.array(values, dtype=float)
+        for v in arr:
+            av = abs(v)
+            if av >= 1e12:
+                s = f"{v/1e12:.1f}T"
+            elif av >= 1e9:
+                s = f"{v/1e9:.1f}B"
+            elif av >= 1e6:
+                s = f"{v/1e6:.1f}M"
+            elif av >= 1e3:
+                s = f"{v/1e3:.1f}K"
+            else:
+                s = f"{v:.0f}"
+            for suf in ("T", "B", "M", "K"):
+                s = s.replace(f".0{suf}", suf)
+            out.append(s)
+        return out
 
     # --- identify company column
     name_col = "Ticker" if "Ticker" in ts_df.columns else (
@@ -634,7 +692,7 @@ def render_holdings_by_company_stacked(
     # --------------- figure ---------------
     fig = go.Figure()
 
-    # stacked bands (fills carry the color; hover is unified so no overlays needed)
+    # stacked bands (fills carry the color; unified hover—no overlays needed)
     order = [n for n, _ in agg.groupby(name_col, sort=False)]
     for i, (key, g) in enumerate(agg.groupby(name_col, sort=False)):
         g = g.sort_values("date")
@@ -648,7 +706,6 @@ def render_holdings_by_company_stacked(
             stackgroup="one",
             fill=("tozeroy" if i == 0 else "tonexty"),
             fillcolor=rgba(c_hex, 0.80),
-            # In unified hover, each trace contributes one row.
             hovertemplate="%{fullData.name}: $%{y:,.0f}<extra></extra>",
         ))
 
@@ -695,11 +752,24 @@ def render_holdings_by_company_stacked(
         legendgroup="__prices__",
     ))
 
+    # --- abbreviate company + total values in unified hover ---
+    for tr in fig.data:
+        if getattr(tr, "stackgroup", None) == "one" and getattr(tr, "y", None) is not None:
+            tr.update(
+                customdata=_short_dollar_array(tr.y),
+                hovertemplate="%{fullData.name}: $%{customdata}<extra></extra>"
+            )
+        elif tr.name == "Total (selected)":
+            tr.update(
+                customdata=_short_dollar_array(tr.y),
+                hovertemplate="Total (selected): $%{customdata}<extra></extra>"
+            )
+
     # layout
     fig.update_layout(
         height=620,
         margin=dict(t=30, b=10, l=10, r=10),
-        hovermode="x unified",                 # << key: unified hover anywhere on x
+        hovermode="x unified",                 # unified hover anywhere on x
         hoverlabel=dict(namelength=-1, align="left"),
         legend=dict(orientation="h", x=0.5, xanchor="center",
                     y=-0.18, yanchor="top", title=""),
@@ -712,8 +782,11 @@ def render_holdings_by_company_stacked(
     )
     fig.update_xaxes(showspikes=True, spikemode="across",
                      spikesnap="cursor", spikedash="dot", spikethickness=1)
-    fig.update_yaxes(title="Holdings Value (USD)", tickprefix="$", separatethousands=True,
-                     rangemode="tozero", showgrid=True, gridcolor="rgba(255,255,255,0.08)", zeroline=False)
+    fig.update_yaxes(
+        title="Holdings Value (USD)",
+        tickprefix="$", separatethousands=True,
+        rangemode="tozero", showgrid=True, gridcolor="rgba(255,255,255,0.08)", zeroline=False
+    )
 
     st.plotly_chart(fig, use_container_width=True)
     return fig
@@ -1465,27 +1538,66 @@ elif analysis_key == "time_series":
         render_live_prices(prices, pct_change)
         st.stop()
 
-    # Two-column layout: chart + selector (match your other pages)
-    graph_col, select_col = st.columns([6, 1])
+    # --- Two-column layout: chart + selector ---
+    graph_col, select_col = st.columns((6, 1))
+
     with select_col:
-        # Reuse your existing checkbox selector; it expects a DataFrame with "Ticker"
+        # Company selector
         selector_df = ts_df if "Ticker" in ts_df.columns else df_view  # fallback
         selected_tickers = render_company_selector(selector_df)
-        view = st.radio(
-            "View", ["Aggregate", "By company"], horizontal=False, key="ts_view")
-        max_n = 5
-        if view != "Aggregate":
-            max_n = st.slider(
-                "Top Names", 3, 10, 5, help="Max companies stacked by latest total value")
 
-    # Apply company filter if we have tickers
+        # View mode
+        view = st.radio(
+            "View", ["Aggregate", "By company"],
+            horizontal=False, key="ts_view"
+        )
+
+        # Range buttons
+        window = st.radio(
+            "Range", ["1M", "6M", "1Y", "2Y", "All"],
+            horizontal=True, index=3, key="ts_range"  # default "2Y"
+        )
+
+        # Top-N slider (show for By company)
+        if view == "By company":
+            max_n = st.slider(
+                "Top Names", 3, 20, 5,
+                help="Max companies stacked by latest total value"
+            )
+        else:
+            max_n = 5  # unused in Aggregate view
+
+    # -------- Filter by tickers --------
     ts_filtered = ts_df.copy()
     if "Ticker" in ts_filtered.columns and selected_tickers:
         ts_filtered = ts_filtered[ts_filtered["Ticker"].isin(selected_tickers)]
 
+    # -------- Apply time window --------
+    if not ts_filtered.empty:
+        ts_filtered["date"] = pd.to_datetime(
+            ts_filtered["date"]).dt.normalize()
+        end = ts_filtered["date"].max()
+
+        if window == "1M":
+            start = end - relativedelta(months=1)
+        elif window == "6M":
+            start = end - relativedelta(months=6)
+        elif window == "1Y":
+            start = end - relativedelta(years=1)
+        elif window == "2Y":
+            start = end - relativedelta(years=2)
+        else:
+            start = ts_filtered["date"].min()
+
+        # clamp to dataset bounds
+        start = max(start, ts_filtered["date"].min())
+        ts_filtered = ts_filtered[(ts_filtered["date"] >= start) & (
+            ts_filtered["date"] <= end)]
+        st.caption(f"Showing {start:%b %Y} – {end:%b %Y}")
+
+    # -------- Draw chart --------
     with graph_col:
         if view == "Aggregate":
-            # reuse your aggregate renderer
             render_holdings_vs_prices(ts_filtered)
         else:
             render_holdings_by_company_stacked(
@@ -1494,17 +1606,19 @@ elif analysis_key == "time_series":
     render_live_prices(prices, pct_change)
     st.stop()
 
-
 elif analysis_key == "table":
     st.subheader("Company Screener Table")
-    # Two‑column layout: data table and selector
-    table_col, select_col = st.columns([4, 1])
+
+    # Two-column layout: data table and selector
+    table_col, select_col = st.columns((4, 1))
     with select_col:
         selected_tickers = render_company_selector(df_view)
 
     df_view_local = df_view[df_view["Ticker"].isin(
         selected_tickers)] if selected_tickers else df_view
     df_display = df_view_local.copy()
+
+    # Format numeric columns if present
     for col in ["Mkt Cap (USD)", "Treasury USD", "Total Liabilities", "Net Crypto NAV"]:
         if col in df_display.columns:
             df_display[col] = df_display[col].apply(fmt_abbrev)
@@ -1513,91 +1627,24 @@ elif analysis_key == "table":
         df_display["NAV per share"] = df_display["NAV per share"].apply(
             lambda x: f"${x:,.2f}" if pd.notnull(x) else "–"
         )
+
     if "Share price USD" in df_display.columns:
         df_display["Share price USD"] = df_display["Share price USD"].apply(
             lambda x: f"${x:,.2f}" if pd.notnull(x) else "–"
         )
+
     if "% of Mkt Cap" in df_display.columns:
         df_display["% of Mkt Cap"] = df_display["% of Mkt Cap"].apply(
-            lambda x: f"{x:.2f}%")
+            lambda x: f"{x:.2f}%"
+        )
+
     if "MNAV (x)" in df_display.columns:
         df_display["MNAV (x)"] = df_display["MNAV (x)"].apply(
             lambda x: f"{x:.2f}x" if pd.notnull(x) else "–"
         )
 
-        table_col.dataframe(df_display, use_container_width=True)
+    with table_col:
+        st.dataframe(df_display, use_container_width=True)
+
     render_live_prices(prices, pct_change)
     st.stop()
-
-    # ------------------------------------------------------------------
-    # Sub‑tab 3: Liabilities vs Net Crypto NAV
-    # ------------------------------------------------------------------
-    with sub_tab3:
-        st.markdown("#### Liabilities vs Net Crypto NAV")
-        st.caption(
-            "Compare total liabilities against net crypto NAV across companies")
-        liab_nav_df = df_view[[
-            "Ticker", "Total Liabilities", "Net Crypto NAV"]].dropna()
-        if not liab_nav_df.empty:
-            # Sort by Net Crypto NAV descending for clearer ordering
-            liab_nav_df_sorted = liab_nav_df.sort_values(
-                "Net Crypto NAV", ascending=False)
-            liab_nav_long = liab_nav_df_sorted.melt(
-                id_vars=["Ticker"],
-                value_vars=["Total Liabilities", "Net Crypto NAV"],
-                var_name="Metric",
-                value_name="Amount",
-            )
-            if HAS_PLOTLY:
-                liab_nav_long = liab_nav_long.copy()
-                liab_nav_long["Amount_B"] = liab_nav_long["Amount"] / 1e9
-                max_val_ln = (
-                    liab_nav_long["Amount"].max(
-                    ) if not liab_nav_long["Amount"].empty else 0
-                )
-                if max_val_ln and max_val_ln > 0:
-                    tickvals_ln = np.linspace(0, max_val_ln, 5)
-                    ticktext_ln = [f"{v/1e9:.2f}B" for v in tickvals_ln]
-                else:
-                    tickvals_ln = [0]
-                    ticktext_ln = ["0B"]
-                fig_ln = px.bar(
-                    liab_nav_long,
-                    x="Ticker",
-                    y="Amount",
-                    color="Metric",
-                    barmode="group",
-                    text="Amount_B",
-                    title=None,
-                )
-                fig_ln.update_yaxes(
-                    title="Amount (B USD)",
-                    type="linear",
-                    tickmode="array",
-                    tickvals=tickvals_ln,
-                    ticktext=ticktext_ln,
-                )
-                fig_ln.update_traces(
-                    texttemplate="%{text:.2f}B",
-                    hovertemplate="<b>%{x}</b><br>%{fullData.name}: %{text:.2f}B<extra></extra>",
-                )
-                # Place legend on the right for long lists
-                fig_ln.update_layout(legend=dict(orientation="v", y=1, x=1.02))
-                st.plotly_chart(fig_ln, use_container_width=True)
-            else:
-                # For Altair fallback, show values directly
-                ln_chart = (
-                    alt.Chart(liab_nav_long)
-                    .mark_bar()
-                    .encode(
-                        x="Ticker:N",
-                        y=alt.Y("Amount:Q", title="Amount (USD)",
-                                scale=alt.Scale(type="linear")),
-                        color="Metric:N",
-                        tooltip=["Ticker", "Metric", "Amount"],
-                    )
-                    .properties(title=None)
-                )
-                st.altair_chart(ln_chart, use_container_width=True)
-        else:
-            st.info("No data for liabilities vs Net Crypto NAV chart.")
