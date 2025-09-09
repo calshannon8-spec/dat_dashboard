@@ -583,6 +583,21 @@ def render_holdings_vs_prices(ts_df: pd.DataFrame):
                 hovertemplate="%{fullData.name}: $%{customdata}<extra></extra>"
             )
 
+    # --- add BTC/ETH symbols to legend & hover names
+    for tr in fig.data:
+        nm = (tr.name or "").lower()
+        is_price = (getattr(tr, "yaxis", "y") == "y2") or ("price" in nm)
+        if "btc" in nm:
+            # Prefix legend/series name
+            tr.name = f"₿ {tr.name}" if not tr.name.startswith("₿ ") else tr.name
+            # Ensure price-row hover shows symbol explicitly
+            if is_price:
+                tr.hovertemplate = "₿ BTC Price: $%{y:,.0f}<extra></extra>"
+        elif "eth" in nm:
+            tr.name = f"⟠ {tr.name}" if not tr.name.startswith("⟠ ") else tr.name
+            if is_price:
+                tr.hovertemplate = "⟠ ETH Price: $%{y:,.0f}<extra></extra>"
+
     st.plotly_chart(fig, use_container_width=True)
     return fig
 
@@ -636,21 +651,44 @@ def render_holdings_by_company_stacked(
     if name_col is None:
         raise ValueError("Expected a 'Ticker' or 'Company' column.")
 
+    # --- normalize & prepare numeric fields
     df = ts_df.copy()
     df["date"] = pd.to_datetime(df["date"]).dt.normalize()
 
-    # --- ensure numeric columns
-    for c in ["btc_holdings", "eth_holdings", "btc_price_usd", "eth_price_usd"]:
+    # Build USD value columns if not present (from holdings × price)
+    if "btc_value" not in df.columns and {"btc_holdings", "btc_price_usd"}.issubset(df.columns):
+        df["btc_value"] = pd.to_numeric(df["btc_holdings"], errors="coerce") * pd.to_numeric(df["btc_price_usd"], errors="coerce")
+    if "eth_value" not in df.columns and {"eth_holdings", "eth_price_usd"}.issubset(df.columns):
+        df["eth_value"] = pd.to_numeric(df["eth_holdings"], errors="coerce") * pd.to_numeric(df["eth_price_usd"], errors="coerce")
+
+    # --- coerce any numeric columns we might use
+    num_cols = [
+        "btc_value", "eth_value",
+        "btc_holdings", "eth_holdings",
+        "btc_price_usd", "eth_price_usd",
+        "total_value"
+    ]
+    for c in num_cols:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
 
+    # --- build total_value once, preferring USD value columns if present
     if "total_value" not in df.columns:
-        need = {"btc_holdings", "eth_holdings",
-                "btc_price_usd", "eth_price_usd"}
-        if not need.issubset(df.columns):
-            raise ValueError("Missing columns to compute total_value.")
-        df["total_value"] = df["btc_holdings"] * df["btc_price_usd"] + \
-            df["eth_holdings"] * df["eth_price_usd"]
+        has_btc_val = "btc_value" in df.columns
+        has_eth_val = "eth_value" in df.columns
+
+        if has_btc_val or has_eth_val:
+            # CSV already supplies USD values — use them directly
+            df["total_value"] = (df.get("btc_value", 0.0) + df.get("eth_value", 0.0))
+        else:
+            # Fall back to counts × price
+            need = {"btc_holdings", "eth_holdings", "btc_price_usd", "eth_price_usd"}
+            if not need.issubset(df.columns):
+                raise ValueError("Missing columns to compute total_value.")
+            df["total_value"] = (
+                df["btc_holdings"] * df["btc_price_usd"] +
+                df["eth_holdings"] * df["eth_price_usd"]
+            )
 
     # --- pick Top-N tickers by latest date
     latest = df["date"].max()
@@ -697,9 +735,12 @@ def render_holdings_by_company_stacked(
     for i, (key, g) in enumerate(agg.groupby(name_col, sort=False)):
         g = g.sort_values("date")
         c_hex = color_map[str(key)]
+        # Build a display name with the primary asset symbol (₿ for BTC, ⟠ for ETH)
+        sym = _asset_symbol_for(str(key))
+        display_name = f"{sym} {str(key)}".strip() if sym else str(key)
         fig.add_trace(go.Scatter(
             x=g["date"], y=g["total_value"],
-            name=str(key),
+            name=display_name,
             legendgroup=str(key),
             mode="lines",
             line=dict(width=0, color=c_hex, shape="spline"),
@@ -764,6 +805,19 @@ def render_holdings_by_company_stacked(
                 customdata=_short_dollar_array(tr.y),
                 hovertemplate="Total (selected): $%{customdata}<extra></extra>"
             )
+
+    # --- add BTC/ETH symbols to legend & hover names (price lines & any BTC/ETH series)
+    for tr in fig.data:
+        nm = (tr.name or "").lower()
+        is_price = (getattr(tr, "yaxis", "y") == "y2") or ("price" in nm)
+        if "btc" in nm:
+            tr.name = f"₿ {tr.name}" if not tr.name.startswith("₿ ") else tr.name
+            if is_price:
+                tr.hovertemplate = "₿ BTC Price: $%{y:,.0f}<extra></extra>"
+        elif "eth" in nm:
+            tr.name = f"⟠ {tr.name}" if not tr.name.startswith("⟠ ") else tr.name
+            if is_price:
+                tr.hovertemplate = "⟠ ETH Price: $%{y:,.0f}<extra></extra>"
 
     # layout
     fig.update_layout(
@@ -952,6 +1006,25 @@ LIABILITIES = {
     (c.get("ticker") or "").strip(): float(c.get("liabilities", 0) or 0)
     for c in companies
 }
+
+# Map each ticker to its primary asset (from companies_holdings.csv)
+PRIMARY_BY_TICKER = {
+    (c.get("ticker") or "").strip().upper(): (c.get("primary") or "").strip().lower()
+    for c in companies
+}
+
+def _asset_symbol_for(ticker: str) -> str:
+    """
+    Return a text symbol for a company's primary asset:
+      BTC -> ₿, ETH -> ⟠, otherwise ''.
+    """
+    t = (ticker or "").strip().upper()
+    a = (PRIMARY_BY_TICKER.get(t, "") or "").lower()
+    if a.startswith("btc") or a == "bitcoin":
+        return "₿"
+    if a.startswith("eth") or a == "ethereum":
+        return "⟠"
+    return ""
 
 
 # -------------------- Company Screener --------------------------
