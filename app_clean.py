@@ -92,7 +92,8 @@ analysis_options = {
     "Treasury Composition": "treasury",
     "Market Cap vs Treasury": "market_vs_treasury",
     "Liabilities vs Net Crypto NAV": "valuation",
-    "Holdings vs Price (Time Series)": "time_series",   # <- ADD THIS
+    "Holdings vs Price (Time Series)": "time_series",
+    "Volume (Time Series)": "volume_ts",
     "Table": "table",
 }
 
@@ -379,26 +380,23 @@ def load_treasury_timeseries() -> pd.DataFrame:
     ]
     path = next((p for p in candidates if p.exists()), None)
     if path is None:
-        st.info("Add data/treasuries_timeseries.csv with columns (any order): "
-                "date, btc_holdings, eth_holdings, btc_price_usd, eth_price_usd")
+        st.info("Add data/treasuries_timeseries.csv with columns (any order): date, btc_holdings, eth_holdings, btc_price_usd, eth_price_usd")
         return pd.DataFrame()
 
     df = pd.read_csv(path)
 
     # normalize headers to be order/case tolerant
     norm = {c.lower().strip(): c for c in df.columns}
-    req = ["date", "btc_holdings", "eth_holdings",
-           "btc_price_usd", "eth_price_usd"]
+    req = ["date", "btc_holdings", "eth_holdings", "btc_price_usd", "eth_price_usd"]
     missing = [k for k in req if k not in norm]
     if missing:
-        st.error(
-            f"Timeseries CSV is missing columns: {missing}. Found: {list(df.columns)}")
+        st.error(f"Timeseries CSV is missing columns: {missing}. Found: {list(df.columns)}")
         return pd.DataFrame()
 
-    def to_num(s):
+    def to_num(s: pd.Series) -> pd.Series:
         return pd.to_numeric(s.astype(str).str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
 
-    # ---- build required columns FIRST
+    # Build required columns first
     out = pd.DataFrame({
         "date": pd.to_datetime(df[norm["date"]]),
         "btc_holdings": to_num(df[norm["btc_holdings"]]),
@@ -407,7 +405,7 @@ def load_treasury_timeseries() -> pd.DataFrame:
         "eth_price_usd": to_num(df[norm["eth_price_usd"]]),
     })
 
-    # ---- then add optional identifiers (only if present)
+    # Optional identifiers
     if "ticker" in norm:
         out["Ticker"] = df[norm["ticker"]].astype(str)
     if "company" in norm:
@@ -415,41 +413,165 @@ def load_treasury_timeseries() -> pd.DataFrame:
 
     return out.sort_values("date").reset_index(drop=True)
 
-    df = pd.read_csv(path)
 
-    # normalize headers (order/case tolerant)
-    norm = {c.lower().strip(): c for c in df.columns}
-    required = ["date", "btc_holdings", "eth_holdings",
-                "btc_price_usd", "eth_price_usd"]
-    missing = [k for k in required if k not in norm]
-    if missing:
-        st.error(
-            f"Timeseries CSV is missing columns: {missing}. Found: {list(df.columns)}")
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_volume_timeseries() -> pd.DataFrame:
+    """
+    Loads volume time-series CSV from common locations.
+    Accepts flexible schema:
+      - Drops Unnamed columns.
+      - Accepts synonyms for date: date, month, time, timestamp.
+      - Accepts synonyms for volume: volume, avg_volume_shares, avg_volume, volume_shares, shares, vol.
+      - Accepts identifier columns in order: ticker, company, asset; creates canonical Ticker (string) or 'All' if none present.
+      - If date header is 'month', coerces to month end.
+      - Coerces volume to numeric after removing commas.
+      - Returns DataFrame with at least date, volume, Ticker, sorted by date.
+    """
+    from pathlib import Path
+    import pandas as pd
+    import re
+
+    base = APP_DIR
+    candidates = [
+        base / "data" / "volume.csv",
+        Path.cwd() / "data" / "volume.csv",
+        base / "volume.csv",
+        Path.cwd() / "volume.csv",
+    ]
+    path = next((p for p in candidates if p.exists()), None)
+    if path is None:
+        st.info("Add data/volume.csv (or volume.csv) with columns: date, volume, [ticker/company/asset optional]")
         return pd.DataFrame()
 
-    def to_num(s):
-        return pd.to_numeric(s.astype(str).str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
+    df = pd.read_csv(path)
+    # Drop Unnamed columns
+    df = df.loc[:, ~df.columns.str.contains(r"^Unnamed:")]
+    # Normalize headers: lowercase/stripped
+    df.columns = [str(c).strip().lower() for c in df.columns]
 
-        out = pd.DataFrame({
-            "date": pd.to_datetime(df[norm["date"]]),
-            "btc_holdings": to_num(df[norm["btc_holdings"]]),
-            "eth_holdings": to_num(df[norm["eth_holdings"]]),
-            "btc_price_usd": to_num(df[norm["btc_price_usd"]]),
-            "eth_price_usd": to_num(df[norm["eth_price_usd"]]),
-        })
+    # Synonyms
+    date_synonyms = ["date", "month", "time", "timestamp"]
+    vol_synonyms = ["volume", "avg_volume_shares", "avg_volume", "volume_shares", "shares", "vol"]
+    id_synonyms = ["ticker", "company", "asset"]
 
-    # Optional identifiers for filtering/stacking
-    if "ticker" in norm:
-        out["Ticker"] = df[norm["ticker"]].astype(str)
-    elif "company" in norm:
-        # fall back: use Company as a stand-in for Ticker if Ticker missing
-        out["Ticker"] = df[norm["company"]].astype(str)
+    # Find columns
+    date_col = next((c for c in date_synonyms if c in df.columns), None)
+    vol_col = next((c for c in vol_synonyms if c in df.columns), None)
+    id_col = next((c for c in id_synonyms if c in df.columns), None)
 
-    if "company" in norm:
-        out["Company"] = df[norm["company"]].astype(str)
+    if not date_col or not vol_col:
+        st.error(
+            f"Volume CSV missing required columns. "
+            f"Date candidates: {date_synonyms}, Volume candidates: {vol_synonyms}. "
+            f"Found: {list(df.columns)}"
+        )
+        return pd.DataFrame()
 
-    out = out.sort_values("date").reset_index(drop=True)
-    return out
+    # Parse date
+    date_series = pd.to_datetime(df[date_col], errors="coerce")
+    if date_col == "month":
+        # Coerce to month end
+        date_series = date_series.dt.to_period("M").dt.to_timestamp("M")
+
+    # Parse volume: remove commas, coerce to float
+    volume_series = (
+        df[vol_col].astype(str).str.replace(",", "", regex=False)
+    )
+    volume_series = pd.to_numeric(volume_series, errors="coerce").fillna(0.0)
+
+    # Identifier: prefer ticker > company > asset
+    if id_col is not None:
+        ticker_series = df[id_col].astype(str)
+    else:
+        ticker_series = pd.Series(["All"] * len(df))
+
+    out = pd.DataFrame({
+        "date": date_series,
+        "volume": volume_series,
+        "Ticker": ticker_series,
+    })
+    # Drop rows with missing date or volume
+    out = out.dropna(subset=["date", "volume"])
+    return out.sort_values("date").reset_index(drop=True)
+
+
+def render_volume_timeseries(vol_df: pd.DataFrame, view: str = "By company", max_companies: int = 5):
+    """
+    Plots volume time series as line chart.
+    If view == "By company" and 'Ticker' exists: show top-N tickers by latest total volume.
+    If Aggregate: sum volume across tickers per date and plot single line.
+    """
+    import plotly.graph_objects as go
+    import plotly.express as px
+
+    df = vol_df.copy()
+    df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+
+    # Helper for hover
+    short_array = _short_dollar_array if "_short_dollar_array" in globals() else (lambda arr: arr)
+
+    # By-company view
+    if "Ticker" in df.columns and view == "By company":
+        latest = df["date"].max()
+        df_latest = df[df["date"] == latest]
+        top_tickers = (
+            df_latest.groupby("Ticker", as_index=False)["volume"].sum()
+            .sort_values("volume", ascending=False)["Ticker"].head(max_companies).tolist()
+        )
+        df = df[df["Ticker"].isin(top_tickers)]
+        agg = (
+            df.groupby(["date", "Ticker"], as_index=False)["volume"]
+            .sum(min_count=1)
+            .sort_values(["date", "Ticker"]) 
+        )
+        tickers = sorted(agg["Ticker"].unique())
+        palette = px.colors.qualitative.Plotly
+        color_map = {t: palette[i % len(palette)] for i, t in enumerate(tickers)}
+
+        fig = go.Figure()
+        for t in tickers:
+            g = agg[agg["Ticker"] == t].sort_values("date")
+            fig.add_trace(go.Scatter(
+                x=g["date"], y=g["volume"],
+                name=str(t), mode="lines",
+                line=dict(width=2, color=color_map[str(t)]),
+                hovertemplate="%{fullData.name}: %{customdata}<extra></extra>",
+                customdata=short_array(g["volume"]),
+            ))
+        fig.update_layout(
+            height=620,
+            margin=dict(t=30, b=10, l=10, r=10),
+            hovermode="x unified",
+            hoverlabel=dict(namelength=-1, align="left"),
+            legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.18, yanchor="top", title=""),
+        )
+        fig.update_xaxes(title="Date", showspikes=True, spikemode="across", spikesnap="cursor", spikedash="dot", spikethickness=1)
+        fig.update_yaxes(title="Volume", rangemode="tozero", showgrid=True, gridcolor="rgba(255,255,255,0.08)", zeroline=False)
+        st.plotly_chart(fig, use_container_width=True)
+        return fig
+
+    # Aggregate view
+    agg = (
+        df.groupby("date", as_index=False)["volume"].sum(min_count=1).sort_values("date")
+    )
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=agg["date"], y=agg["volume"], name="Total Volume",
+        mode="lines", line=dict(width=2, color="#1f77b4"),
+        hovertemplate="Total Volume: %{customdata}<extra></extra>",
+        customdata=short_array(agg["volume"]),
+    ))
+    fig.update_layout(
+        height=620,
+        margin=dict(t=30, b=10, l=10, r=10),
+        hovermode="x unified",
+        hoverlabel=dict(namelength=-1, align="left"),
+        legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.18, yanchor="top", title=""),
+    )
+    fig.update_xaxes(title="Date", showspikes=True, spikemode="across", spikesnap="cursor", spikedash="dot", spikethickness=1)
+    fig.update_yaxes(title="Volume", rangemode="tozero", showgrid=True, gridcolor="rgba(255,255,255,0.08)", zeroline=False)
+    st.plotly_chart(fig, use_container_width=True)
+    return fig
 
 
 def render_holdings_vs_prices(ts_df: pd.DataFrame):
@@ -508,7 +630,7 @@ def render_holdings_vs_prices(ts_df: pd.DataFrame):
         fig.add_trace(go.Scatter(
             x=daily["date"], y=daily["btc_value"],
             name="BTC Holdings (USD)",
-            mode="lines", line=dict(width=0, shape="spline"),
+            mode="lines", line=dict(width=0),
             stackgroup="one", fill="tozeroy",
             hovertemplate="BTC Holdings: $%{y:,.0f}<extra></extra>",
         ))
@@ -516,7 +638,7 @@ def render_holdings_vs_prices(ts_df: pd.DataFrame):
         fig.add_trace(go.Scatter(
             x=daily["date"], y=daily["eth_value"],
             name="ETH Holdings (USD)",
-            mode="lines", line=dict(width=0, shape="spline"),
+            mode="lines", line=dict(width=0),
             stackgroup="one", fill="tonexty",
             hovertemplate="ETH Holdings: $%{y:,.0f}<extra></extra>",
         ))
@@ -605,7 +727,7 @@ def render_holdings_vs_prices(ts_df: pd.DataFrame):
 def render_holdings_by_company_stacked(
     ts_df: pd.DataFrame,
     max_companies: int = 5,
-    show_boundaries: bool = True,
+    show_boundaries: bool = False,
     show_end_labels: bool = True
 ):
     """
@@ -743,25 +865,13 @@ def render_holdings_by_company_stacked(
             name=display_name,
             legendgroup=str(key),
             mode="lines",
-            line=dict(width=0, color=c_hex, shape="spline"),
+            line=dict(width=0, color=c_hex),
             stackgroup="one",
             fill=("tozeroy" if i == 0 else "tonexty"),
             fillcolor=rgba(c_hex, 0.80),
             hovertemplate="%{fullData.name}: $%{y:,.0f}<extra></extra>",
         ))
 
-    # optional: boundary lines for visual separation
-    if show_boundaries:
-        wide_b = agg.pivot(index="date", columns=name_col,
-                           values="total_value").reindex(columns=order).fillna(0)
-        cum_top_b = wide_b.cumsum(axis=1)
-        for comp in order:
-            fig.add_trace(go.Scatter(
-                x=wide_b.index, y=cum_top_b[comp].values,
-                mode="lines",
-                line=dict(width=1, color="rgba(255,255,255,0.28)"),
-                hoverinfo="skip", showlegend=False
-            ))
 
     # TOTAL (selected) as its own invisible line -> single row in unified hover
     fig.add_trace(go.Scatter(
@@ -1674,6 +1784,50 @@ elif analysis_key == "time_series":
             render_holdings_by_company_stacked(
                 ts_filtered, max_companies=max_n)
 
+    render_live_prices(prices, pct_change)
+    st.stop()
+
+elif analysis_key == "volume_ts":
+    st.subheader("Volume (Time Series)")
+    st.caption("Line chart of trading volume over time.")
+    ts_df = load_volume_timeseries()
+    if ts_df.empty:
+        render_live_prices(prices, pct_change)
+        st.stop()
+    graph_col, select_col = st.columns((6, 1))
+    with select_col:
+        selector_df = ts_df if "Ticker" in ts_df.columns else df_view
+        selected_tickers = render_company_selector(selector_df)
+        view = st.radio(
+            "View", ["Aggregate", "By company"], horizontal=False, key="vol_view"
+        )
+        window = st.radio(
+            "Range", ["3M", "6M", "1Y", "All"], horizontal=True, index=3, key="vol_range"
+        )
+        if view == "By company":
+            max_n = st.slider("Top Names", 3, 20, 5, help="Max companies shown by latest volume")
+        else:
+            max_n = 5
+    ts_filtered = ts_df.copy()
+    if "Ticker" in ts_filtered.columns and selected_tickers:
+        ts_filtered = ts_filtered[ts_filtered["Ticker"].isin(selected_tickers)]
+    if not ts_filtered.empty:
+        ts_filtered["date"] = pd.to_datetime(ts_filtered["date"]).dt.normalize()
+        end = ts_filtered["date"].max()
+        from dateutil.relativedelta import relativedelta
+        if window == "3M":
+            start = end - relativedelta(months=3)
+        elif window == "6M":
+            start = end - relativedelta(months=6)
+        elif window == "1Y":
+            start = end - relativedelta(years=1)
+        else:
+            start = ts_filtered["date"].min()
+        start = max(start, ts_filtered["date"].min())
+        ts_filtered = ts_filtered[(ts_filtered["date"] >= start) & (ts_filtered["date"] <= end)]
+        st.caption(f"Showing {start:%b %Y} – {end:%b %Y}")
+    with graph_col:
+        render_volume_timeseries(ts_filtered, view=view, max_companies=max_n)
     render_live_prices(prices, pct_change)
     st.stop()
 
